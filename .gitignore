@@ -4,3 +4,8 @@
 .vscode/launch.json
 .vscode/ipch
 _codeql_detected_source_root
+
+
+github-reference-repositories/
+betaflight/
+PX4-Autopilot/

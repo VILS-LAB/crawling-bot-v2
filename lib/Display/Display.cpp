@@ -74,6 +74,13 @@ void Display::print(int value, uint8_t x, uint8_t y)
     cursorY = oled->getCursorY();
 }
 
+void Display::printFloat(float value, uint8_t decimals)
+{
+    oled->print(value, decimals);
+    cursorX = oled->getCursorX();
+    cursorY = oled->getCursorY();
+}
+
 void Display::println(const char *text, uint8_t x, uint8_t y)
 {
     if (x != 0 || y != 0)

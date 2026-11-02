@@ -107,13 +107,17 @@
 | 🔧 [BUILD.fa.md](docs/BUILD.fa.md)                     | راهنمای دقیق ساخت و استقرار                 |
 | 💻 [EXAMPLES.fa.md](docs/EXAMPLES.fa.md)               | نمونه کدها و قطعات RL                       |
 | 📊 [PROJECT_SUMMARY.fa.md](docs/PROJECT_SUMMARY.fa.md) | مستندات کامل فنی                            |
+| 📈 [IMU_DEBUGGING.fa.md](docs/IMU_DEBUGGING.fa.md)     | نمودار زنده، نمایش سه‌بعدی و تست IMU        |
 | 🔄 [MIGRATION.fa.md](docs/MIGRATION.fa.md)             | یادداشت‌های مهاجرت از Arduino به PlatformIO |
 
 ## سخت‌افزار و معماری
 
 **سخت‌افزار:** ESP32-S3، MPU9250 (۹-DOF)، ۲ سروو، نمایشگر OLED  
-**نرم‌افزار:** ۵ کتابخانه ماژولار (Display، AHRS، ServoControl، Network، Training)  
+**نرم‌افزار:** کتابخانه‌های ماژولار (Display، AHRS، ServoControl، Network، Training)
 **برق:** آداپتور ۱۲ ولت
+
+تا زمان تعمیر سرووها، در `include/config.h` مقدار `ENABLE_SERVOS` برابر صفر است؛
+در این حالت health check به سرووها فرمان نمی‌دهد و فقط IMU و نمایشگر را بررسی می‌کند.
 
 > 📖 **مشخصات کامل:** [PROJECT_SUMMARY.fa.md](docs/PROJECT_SUMMARY.fa.md#hardware) و [PROJECT_SUMMARY.fa.md](docs/PROJECT_SUMMARY.fa.md#architecture) را ببینید
 

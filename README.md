@@ -120,6 +120,7 @@ A hands-on robotics platform where AI students apply **Reinforcement Learning** 
 | 🔧 [BUILD.md](docs/BUILD.md)                     | Detailed build & deployment           |
 | 💻 [EXAMPLES.md](docs/EXAMPLES.md)               | RL code examples & snippets           |
 | 📊 [PROJECT_SUMMARY.md](docs/PROJECT_SUMMARY.md) | Full technical documentation          |
+| 📈 [IMU_DEBUGGING.fa.md](docs/IMU_DEBUGGING.fa.md) | Live plots, 3D view, and IMU tests     |
 | 🔄 [MIGRATION.md](docs/MIGRATION.md)             | Arduino to PlatformIO migration notes |
 
 ## Hardware & Architecture

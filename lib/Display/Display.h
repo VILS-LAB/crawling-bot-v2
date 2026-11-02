@@ -16,6 +16,7 @@ public:
     void print(const char *text, uint8_t x = 0, uint8_t y = 0);
     void print(const String &text, uint8_t x = 0, uint8_t y = 0);
     void print(int value, uint8_t x = 0, uint8_t y = 0);
+    void printFloat(float value, uint8_t decimals = 2);
     void println(const char *text, uint8_t x = 0, uint8_t y = 0);
     void setCursor(uint8_t x, uint8_t y);
     void setTextSize(uint8_t size);

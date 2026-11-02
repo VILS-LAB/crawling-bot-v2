@@ -4,17 +4,35 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <MPU9250.h>
+#include <Preferences.h>
 #include <Math.h>
 
+struct ImuTelemetry
+{
+    float accel[3];       // Calibrated accelerometer, m/s^2, body frame
+    float linearAccel[3]; // Gravity-free acceleration, m/s^2, world frame
+    float filteredLinearAccel[3]; // Low-pass filtered gravity-free acceleration
+    float filteredGyro[3]; // Low-pass filtered gyro, deg/s
+    float gyro[3];        // Gyroscope, deg/s, body frame
+    float mag[3];         // Magnetometer, uT, body frame
+    float quaternion[4];  // w, x, y, z
+    float roll;
+    float pitch;
+    float yaw;
+    float temperature;
+    float dt;
+};
 
 class AHRS
 {
 public:
     AHRS();
     ~AHRS();
-    bool begin();
+    bool begin(uint8_t robotNumber = 1);
     void update();
-    void calibrate();
+    bool calibrate();
+    void serviceConsole();
+    bool isSerialTelemetryEnabled() const { return serialTelemetryEnabled; }
 
     // Motion detection
     bool isMoving();
@@ -35,6 +53,7 @@ public:
     float getLinearAccelX() { return linearAccel[0]; }
     float getLinearAccelY() { return linearAccel[1]; }
     float getLinearAccelZ() { return linearAccel[2]; }
+    const ImuTelemetry &getTelemetry() const { return telemetry; }
 
     // Orientation (Euler angles)
     float getRoll() { return initialized ? mpu->getRoll() : 0; }
@@ -66,6 +85,23 @@ public:
     float getTemperature() { return initialized ? mpu->getTemperature() : 0; }
 
 private:
+    void updateTelemetry(float dt);
+    bool calibrateAccelerometerCloud();
+    bool calibrateGyroscope();
+    bool calibrateMagnetometer();
+    bool runCalibration(bool gyro, bool accelerometer, bool magnetometer);
+    void printCalibrationMenu() const;
+    void printCalibrationStatus() const;
+    bool consumeCalibrationControl();
+    bool saveCalibration();
+    void clearStoredCalibration();
+    bool loadCalibration();
+    void setCalibrationLed(bool on);
+    void blinkCalibrationLed(uint8_t count);
+    void correctAccelerometer(const float input[3], float output[3]) const;
+    static void rotateBodyToWorld(float roll, float pitch, float yaw,
+                                  const float body[3], float world[3]);
+
     MPU9250 *mpu;
     bool initialized;
     bool isStatic;
@@ -75,6 +111,23 @@ private:
     float velocity[3];    // m/s
     float position[3];    // m
     float linearAccel[3]; // m/s^2 (gravity removed)
+    float accelBias[3];
+    float accelScale[3];
+    float accelMatrix[3][3];
+    float gyroBias[3];
+    float magBias[3];
+    float magScale[3];
+    float magMatrix[3][3];
+    uint8_t robotNumber;
+    Preferences preferences;
+    bool calibrationLoaded;
+    bool filtersInitialized;
+    bool serialTelemetryEnabled;
+    bool attitudeInitialized;
+    float attitudeRoll;
+    float attitudePitch;
+    float attitudeYaw;
+    ImuTelemetry telemetry{};
 
     // Constants
     static constexpr float G_CONST = 9.80665f;                // m/s^2

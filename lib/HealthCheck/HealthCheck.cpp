@@ -1,4 +1,5 @@
 #include "HealthCheck.h"
+#include "../../include/config.h"
 
 HealthCheck::HealthCheck(Display *display, AHRS *ahrs, ServoControl *servoControl)
     : display(display), ahrs(ahrs), servoControl(servoControl)
@@ -34,6 +35,8 @@ void HealthCheck::run()
     display->refresh();
     delay(500);
 
+    // Servo hardware can be disabled while the mechanics are disconnected.
+#if ENABLE_SERVOS
     // Test servos
     display->clear();
     display->setCursor(0, 0);
@@ -41,13 +44,21 @@ void HealthCheck::run()
     display->refresh();
     servoControl->setTestPosition();
     delay(500);
+#else
+    display->setCursor(0, 32);
+    display->print("Servos: disabled");
+    display->refresh();
+    delay(500);
+#endif
 
+#if ENABLE_SERVOS
     servoControl->setInitialPosition();
     display->clear();
     display->setCursor(0, 0);
     display->print("Servos Reset");
     display->refresh();
     delay(500);
+#endif
 
     display->clear();
     display->setCursor(0, 0);
