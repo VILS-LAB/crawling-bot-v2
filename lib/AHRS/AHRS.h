@@ -6,6 +6,9 @@
 #include <MPU9250.h>
 #include <Preferences.h>
 #include <Math.h>
+#include "ImuCalibration.h"
+#include "ImuFilters.h"
+#include "ImuRotation.h"
 
 struct ImuTelemetry
 {
@@ -13,6 +16,7 @@ struct ImuTelemetry
     float linearAccel[3]; // Gravity-free acceleration, m/s^2, world frame
     float filteredLinearAccel[3]; // Low-pass filtered gravity-free acceleration
     float filteredGyro[3]; // Low-pass filtered gyro, deg/s
+    float filteredMag[3]; // Median + Butterworth + adaptive Kalman, uT
     float gyro[3];        // Gyroscope, deg/s, body frame
     float mag[3];         // Magnetometer, uT, body frame
     float quaternion[4];  // w, x, y, z
@@ -99,9 +103,7 @@ private:
     void setCalibrationLed(bool on);
     void blinkCalibrationLed(uint8_t count);
     void correctAccelerometer(const float input[3], float output[3]) const;
-    static void rotateBodyToWorld(float roll, float pitch, float yaw,
-                                  const float body[3], float world[3]);
-
+    void filterTelemetry();
     MPU9250 *mpu;
     bool initialized;
     bool isStatic;
@@ -111,22 +113,16 @@ private:
     float velocity[3];    // m/s
     float position[3];    // m
     float linearAccel[3]; // m/s^2 (gravity removed)
-    float accelBias[3];
-    float accelScale[3];
-    float accelMatrix[3][3];
-    float gyroBias[3];
-    float magBias[3];
-    float magScale[3];
-    float magMatrix[3][3];
+    float gravityReference; // Estimated world-frame gravity magnitude
+    ImuCalibrationData calibration{};
     uint8_t robotNumber;
     Preferences preferences;
     bool calibrationLoaded;
-    bool filtersInitialized;
     bool serialTelemetryEnabled;
-    bool attitudeInitialized;
-    float attitudeRoll;
-    float attitudePitch;
-    float attitudeYaw;
+    ImuFilterPipeline accelFilter;
+    ImuFilterPipeline gyroFilter;
+    ImuFilterPipeline magFilter;
+    ComplementaryAttitude attitude;
     ImuTelemetry telemetry{};
 
     // Constants

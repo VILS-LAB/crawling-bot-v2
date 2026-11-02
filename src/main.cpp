@@ -122,6 +122,12 @@ void printTelemetryCsv()
     Serial.print(',');
     Serial.print(imu.filteredGyro[2], 3);
     Serial.print(',');
+    Serial.print(imu.filteredMag[0], 3);
+    Serial.print(',');
+    Serial.print(imu.filteredMag[1], 3);
+    Serial.print(',');
+    Serial.print(imu.filteredMag[2], 3);
+    Serial.print(',');
     Serial.print(imu.roll, 2);
     Serial.print(',');
     Serial.print(imu.pitch, 2);

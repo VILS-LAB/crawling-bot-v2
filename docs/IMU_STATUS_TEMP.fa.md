@@ -2,11 +2,20 @@
 
 این سند وضعیت فعلی IMU را تا قبل از اضافه‌کردن EKF ثبت می‌کند.
 
+## ساختار ماژول‌ها
+
+- `ImuCalibration.*`: داده‌ی calibration، ellipsoid fit، اصلاح ماتریسی و NVS.
+- `ImuFilters.*`: median سه‌نمونه‌ای، low-pass Butterworth مرتبه‌ی دوم و Adaptive Kalman.
+- `ImuRotation.*`: دوران body-to-world و complementary attitude.
+- `AHRS.*`: مدیریت سنسور، telemetry، کنسول و orchestration.
+
 ## کارهایی که تاکنون انجام شده
 
 - تنظیم MPU9250 روی بازه‌ی `±4g` و `±500 dps`، نرخ نمونه‌برداری 200Hz و DLPF حدود 41/45Hz.
 - کالیبراسیون مستقل gyro با 2500 نمونه، محاسبه‌ی bias و sigma و ردکردن calibration پرنویز.
-- کالیبراسیون accelerometer با پوشش سه‌بعدی و ellipsoid fit نه‌پارامتری.
+- کالیبراسیون accelerometer اکنون به روش شش‌وضعیتی راهنمایی‌شده انجام می‌شود: هر محور دو بار، با نگه‌داشتن ربات ثابت در دو سمت مخالف.
+- برای هر وضعیت ۱۸۰ نمونه‌ی پایدار جمع می‌شود. از میانگین دو سمت هر محور bias و scale مستقل محاسبه می‌شود؛ این روش برای کالیبراسیون دستی ساده‌تر و قابل تکرارتر است، اما مانند ellipsoid fit کامل، misalignment بین محورها را تخمین نمی‌زند.
+- کاربر لازم نیست مقدار local `g` را وارد کند؛ داده‌ی MPU9250 بر حسب `g` نرمال شده است و مقدار محلی گرانش برای این کاربرد تفاوت ناچیزی دارد.
 - استخراج bias و ماتریس اصلاحی کامل `3x3` برای accelerometer:
   `a_corrected = M_acc * (a_raw - bias)`.
 - ذخیره‌ی calibration در NVS بر اساس شماره‌ی ربات.
@@ -16,7 +25,43 @@
 - complementary attitude:
   - انتگرال‌گیری gyro برای roll/pitch/yaw
   - تصحیح آهسته‌ی roll/pitch با accelerometer فقط وقتی norm نزدیک 1g است.
-- low-pass مرتبه‌اول برای شتاب خطی و gyro.
+- تصحیح accelerometer برای attitude فقط وقتی انجام می‌شود که هم norm در بازه‌ی نزدیک 1g باشد و هم gyro تقریباً ساکن باشد؛ این مانع تفسیر شتاب خطی ربات به‌عنوان تغییر شیب می‌شود.
+- median سه‌نمونه‌ای برای حذف spike، low-pass Butterworth مرتبه‌ی دوم و scalar Adaptive Kalman برای شتاب خطی، gyro و magnetometer.
+
+## مسیر دقیق فیلترها
+
+Calibration روی نمونه‌ی خام انجام می‌شود و فیلتر نیست:
+
+```text
+raw accelerometer
+  -> ellipsoid correction
+  -> gravity removal
+  -> median(3)
+  -> Butterworth 2nd order, 12 Hz
+  -> scalar Adaptive Kalman
+  -> filteredLinearAccel
+```
+
+```text
+raw gyro
+  -> bias subtraction
+  -> median(3)
+  -> Butterworth 2nd order, 25 Hz
+  -> scalar Adaptive Kalman
+  -> filteredGyro
+  -> complementary attitude
+```
+
+```text
+raw magnetometer
+  -> library calibration correction
+  -> median(3)
+  -> Butterworth 2nd order, 5 Hz
+  -> scalar Adaptive Kalman
+  -> filteredMag
+```
+
+Adaptive Kalman فعلی یک فیلتر scalar مستقل برای هر محور است، نه EKF و نه PX4 EKF2. وقتی innovation بزرگ شود، measurement noise مؤثر افزایش می‌یابد و فیلتر کمتر به آن نمونه اعتماد می‌کند. این فیلتر هنوز covariance کامل بین محورها، مدل دینامیکی، bias state یا fusion چندحسگری ندارد.
 - تشخیص سکون با نزدیک‌بودن norm شتاب calibrated به `1g` و کوچک‌بودن gyro.
 - هنگام سکون، velocity صفر می‌شود؛ این از drift جلوگیری می‌کند اما estimator کامل نیست.
 - خروجی CSV قابل کنترل با `stream on` و `stream off`.
@@ -26,8 +71,8 @@
 
 | قابلیت | وضعیت فعلی |
 |---|---|
-| Adaptive weighting | نداریم؛ وزن اعتماد accelerometer ثابت است |
-| Adaptive Kalman | نداریم |
+| Adaptive weighting | فقط داخل scalar Adaptive Kalman و بر اساس innovation |
+| Adaptive Kalman | داریم؛ مستقل برای هر محور، اما نه EKF کامل |
 | EKF2 | نداریم |
 | EKF کامل وضعیت/سرعت/بایاس | نداریم |
 | ZUPT واقعی | نداریم؛ فقط velocity reset هنگام تشخیص سکون داریم |
@@ -77,4 +122,3 @@ acceleration -> velocity -> position
 4. تبدیل static reset فعلی به ZUPT صریح با نوآوری و آستانه‌های قابل گزارش.
 5. اضافه‌کردن estimator سبک برای attitude/bias.
 6. فقط در صورت نیاز واقعی، پیاده‌سازی EKF کامل با state و measurementهای مشخص.
-
