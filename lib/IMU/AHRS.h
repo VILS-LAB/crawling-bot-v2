@@ -125,6 +125,7 @@ private:
     Preferences preferences;
     bool calibrationLoaded;
     bool serialTelemetryEnabled;
+    uint8_t deadbandMode;
     ImuFilterPipeline accelFilter;
     ImuFilterPipeline gyroFilter;
     ImuFilterPipeline magFilter;

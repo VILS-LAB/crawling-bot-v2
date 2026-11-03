@@ -24,7 +24,8 @@ constexpr uint8_t STILL_FAILURE_ACCEL_STDDEV = 1u << 2;
 
 AHRS::AHRS(Display *display) : initialized(false), isStatic(true), stationaryStartTime(0),
                robotNumber(1), calibrationLoaded(false),
-               serialTelemetryEnabled(true), gravityReference(G_CONST),
+               serialTelemetryEnabled(true), deadbandMode(DEADBAND_MODE),
+               gravityReference(G_CONST),
                statusDisplay(display)
 {
     mpu = new MPU9250();
@@ -157,7 +158,7 @@ bool AHRS::runCalibration(bool gyro, bool accelerometer, bool magnetometer)
 void AHRS::printCalibrationMenu() const
 {
     Serial.println();
-    Serial.println("IMU MENU: 1=gyro 2=accel 3=mag 4=all 5=status 6=clear 0=close");
+    Serial.println("IMU MENU: 1=gyro 2=accel 3=mag 4=all 5=status 6=clear 7=cycle_deadband 0=close");
 }
 
 void AHRS::printCalibrationStatus() const
@@ -170,7 +171,11 @@ void AHRS::printCalibrationStatus() const
     Serial.print(",acc_norm=");
     Serial.print(sqrtf(sq(imu.accel[0]) + sq(imu.accel[1]) + sq(imu.accel[2])) / G_CONST, 4);
     Serial.print(",gyro_norm=");
-    Serial.println(sqrtf(sq(imu.gyro[0]) + sq(imu.gyro[1]) + sq(imu.gyro[2])), 4);
+    Serial.print(sqrtf(sq(imu.gyro[0]) + sq(imu.gyro[1]) + sq(imu.gyro[2])), 4);
+    Serial.print(",deadband_mode=");
+    Serial.print(deadbandMode);
+    Serial.print(",deadband_ms2=");
+    Serial.println(DEADBAND_MS2, 4);
 }
 
 void AHRS::clearStoredCalibration()
@@ -233,6 +238,12 @@ void AHRS::serviceConsole()
         {
             clearStoredCalibration();
             Serial.println("IMU MENU: calibration cleared; reboot before using");
+        }
+        else if (character == '7')
+        {
+            deadbandMode = (deadbandMode + 1) % 3;
+            Serial.print("IMU,DEADBAND,mode=");
+            Serial.println(deadbandMode);
         }
     }
 }
@@ -646,9 +657,14 @@ void AHRS::update()
 
     for (int i = 0; i < 3; i++)
     {
-        const float acceleration = fabsf(telemetry.filteredLinearAccel[i]) < 0.025f
-                                       ? 0.0f
-                                       : telemetry.filteredLinearAccel[i];
+        const float inputAcceleration = telemetry.filteredLinearAccel[i];
+        const float magnitude = fabsf(inputAcceleration);
+        float acceleration = inputAcceleration;
+        if (deadbandMode == 1)
+            acceleration = magnitude < DEADBAND_MS2 ? 0.0f : inputAcceleration;
+        else if (deadbandMode == 2)
+            acceleration = copysignf(fmaxf(magnitude - DEADBAND_MS2, 0.0f),
+                                     inputAcceleration);
         velocity[i] += acceleration * dt;
         position[i] += velocity[i] * dt;
     }
