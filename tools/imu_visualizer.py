@@ -13,7 +13,8 @@ from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
 FIELDS = [
     "t_ms", "dt", "ax", "ay", "az", "lax", "lay", "laz",
-    "flax", "flay", "flaz", "gx", "gy", "gz", "fgx", "fgy", "fgz",
+    "flax", "flay", "flaz", "gx", "gy", "gz", "gbx", "gby", "gbz",
+    "fgx", "fgy", "fgz",
     "magx", "magy", "magz",
     "roll", "pitch", "yaw", "vx", "vy", "vz",
     "px", "py", "pz", "temp_c", "moving", "still", "still_failure_mask",

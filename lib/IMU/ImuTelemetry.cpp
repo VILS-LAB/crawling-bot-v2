@@ -22,7 +22,7 @@ void ImuTelemetryOutput::update(AHRS &ahrs)
 
 void ImuTelemetryOutput::printHeader() const
 {
-    Serial.println("IMU,t_ms,dt,ax,ay,az,lax,lay,laz,flax,flay,flaz,gx,gy,gz,fgx,fgy,fgz,magx,magy,magz,roll,pitch,yaw,vx,vy,vz,px,py,pz,temp_c,moving,still,still_failure_mask");
+    Serial.println("IMU,t_ms,dt,ax,ay,az,lax,lay,laz,flax,flay,flaz,gx,gy,gz,gbx,gby,gbz,fgx,fgy,fgz,magx,magy,magz,roll,pitch,yaw,vx,vy,vz,px,py,pz,temp_c,moving,still,still_failure_mask");
 }
 
 void ImuTelemetryOutput::printCsv(AHRS &ahrs) const
@@ -51,6 +51,11 @@ void ImuTelemetryOutput::printCsv(AHRS &ahrs) const
     {
         Serial.print(',');
         Serial.print(imu.gyro[i], 3);
+    }
+    for (uint8_t i = 0; i < 3; ++i)
+    {
+        Serial.print(',');
+        Serial.print(imu.gyroBias[i], 3);
     }
     for (uint8_t i = 0; i < 3; ++i)
     {

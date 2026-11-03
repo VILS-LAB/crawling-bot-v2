@@ -29,6 +29,7 @@ struct ImuTelemetry
     float dt;
     bool still;
     uint8_t stillFailureMask;
+    float gyroBias[3];
 };
 
 class AHRS
@@ -114,6 +115,7 @@ private:
     bool initialized;
     bool isStatic;
     unsigned long stationaryStartTime;
+    unsigned long biasStillStartTime;
     unsigned long lastUpdateTime;
 
     float velocity[3];    // m/s
@@ -126,7 +128,9 @@ private:
     bool calibrationLoaded;
     bool serialTelemetryEnabled;
     uint8_t deadbandMode;
+    float initialGyroBias[3] = {};
     ImuFilterPipeline accelFilter;
+    MedianFilter5 gyroMedianFilter;
     ImuFilterPipeline gyroFilter;
     ImuFilterPipeline magFilter;
     ComplementaryAttitude attitude;

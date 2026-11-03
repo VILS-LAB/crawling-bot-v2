@@ -20,9 +20,13 @@ constexpr float STILL_ACCEL_NORM_STDDEV_MAX_G = 0.004f;
 constexpr uint8_t STILL_FAILURE_ACCEL_NORM = 1u << 0;
 constexpr uint8_t STILL_FAILURE_GYRO_NORM = 1u << 1;
 constexpr uint8_t STILL_FAILURE_ACCEL_STDDEV = 1u << 2;
+constexpr uint32_t GYRO_BIAS_UPDATE_HOLD_MS = 1000;
+constexpr float GYRO_BIAS_UPDATE_ALPHA = 0.001f;
+constexpr float GYRO_BIAS_MAX_DRIFT_DPS = 0.5f;
 }
 
 AHRS::AHRS(Display *display) : initialized(false), isStatic(true), stationaryStartTime(0),
+               biasStillStartTime(0),
                robotNumber(1), calibrationLoaded(false),
                serialTelemetryEnabled(true), deadbandMode(DEADBAND_MODE),
                gravityReference(G_CONST),
@@ -71,10 +75,17 @@ bool AHRS::begin(uint8_t requestedRobotNumber)
     lastUpdateTime = millis();
     if (loadCalibration())
     {
+        for (int i = 0; i < 3; ++i)
+            initialGyroBias[i] = calibration.gyroBias[i];
         mpu->setMagBias(calibration.magBias[0], calibration.magBias[1], calibration.magBias[2]);
         mpu->setMagScale(calibration.magScale[0], calibration.magScale[1], calibration.magScale[2]);
         Serial.print("CAL,LOADED,robot=");
         Serial.println(robotNumber);
+    }
+    else
+    {
+        for (int i = 0; i < 3; ++i)
+            initialGyroBias[i] = calibration.gyroBias[i];
     }
     return true;
 }
@@ -652,6 +663,32 @@ void AHRS::update()
     }
     telemetry.still = isStatic;
 
+    if (telemetry.still)
+    {
+        if (biasStillStartTime == 0)
+            biasStillStartTime = now;
+        if (now - biasStillStartTime >= GYRO_BIAS_UPDATE_HOLD_MS)
+        {
+            const float gyroRaw[3] = {
+                mpu->getGyroX(), mpu->getGyroY(), mpu->getGyroZ()};
+            for (int i = 0; i < 3; ++i)
+            {
+                calibration.gyroBias[i] +=
+                    GYRO_BIAS_UPDATE_ALPHA *
+                    (gyroRaw[i] - calibration.gyroBias[i]);
+                calibration.gyroBias[i] = initialGyroBias[i] +
+                    fmaxf(-GYRO_BIAS_MAX_DRIFT_DPS,
+                          fminf(GYRO_BIAS_MAX_DRIFT_DPS,
+                                calibration.gyroBias[i] - initialGyroBias[i]));
+                telemetry.gyroBias[i] = calibration.gyroBias[i];
+            }
+        }
+    }
+    else
+    {
+        biasStillStartTime = 0;
+    }
+
     if (isStatic)
         return;
 
@@ -682,15 +719,19 @@ void AHRS::updateTelemetry(float dt)
     telemetry.gyro[0] = mpu->getGyroX() - calibration.gyroBias[0];
     telemetry.gyro[1] = mpu->getGyroY() - calibration.gyroBias[1];
     telemetry.gyro[2] = mpu->getGyroZ() - calibration.gyroBias[2];
+    for (int i = 0; i < 3; ++i)
+        telemetry.gyroBias[i] = calibration.gyroBias[i];
     telemetry.mag[0] = mpu->getMagX();
     telemetry.mag[1] = mpu->getMagY();
     telemetry.mag[2] = mpu->getMagZ();
     gyroFilter.update(telemetry.gyro, telemetry.filteredGyro);
+    float medianGyro[3];
+    gyroMedianFilter.update(telemetry.gyro, medianGyro);
     telemetry.quaternion[0] = mpu->getQuaternionW();
     telemetry.quaternion[1] = mpu->getQuaternionX();
     telemetry.quaternion[2] = mpu->getQuaternionY();
     telemetry.quaternion[3] = mpu->getQuaternionZ();
-    attitude.update(correctedAccel, telemetry.filteredGyro, dt,
+    attitude.update(correctedAccel, medianGyro, dt,
                     telemetry.roll, telemetry.pitch, telemetry.yaw);
     telemetry.temperature = mpu->getTemperature();
 
