@@ -1,26 +1,36 @@
 #include "ImuFilters.h"
 #include <math.h>
 
-void MedianFilter3::reset()
+void MedianFilter5::reset()
 {
     memset(history, 0, sizeof(history));
     count = 0;
 }
 
-void MedianFilter3::update(const float input[3], float output[3])
+void MedianFilter5::update(const float input[3], float output[3])
 {
     for (uint8_t axis = 0; axis < 3; ++axis)
     {
-        history[axis][2] = history[axis][1];
-        history[axis][1] = history[axis][0];
+        for (uint8_t i = 4; i > 0; --i)
+            history[axis][i] = history[axis][i - 1];
         history[axis][0] = input[axis];
-        float values[3] = {history[axis][0], history[axis][1], history[axis][2]};
-        if (values[0] > values[1]) { float t = values[0]; values[0] = values[1]; values[1] = t; }
-        if (values[1] > values[2]) { float t = values[1]; values[1] = values[2]; values[2] = t; }
-        if (values[0] > values[1]) { float t = values[0]; values[0] = values[1]; values[1] = t; }
-        output[axis] = count < 2 ? input[axis] : values[1];
+        float values[5];
+        for (uint8_t i = 0; i < 5; ++i)
+            values[i] = history[axis][i];
+        for (uint8_t i = 1; i < 5; ++i)
+        {
+            const float value = values[i];
+            uint8_t j = i;
+            while (j > 0 && values[j - 1] > value)
+            {
+                values[j] = values[j - 1];
+                --j;
+            }
+            values[j] = value;
+        }
+        output[axis] = count < 4 ? input[axis] : values[2];
     }
-    if (count < 3) ++count;
+    if (count < 5) ++count;
 }
 
 void ButterworthFilter3::configure(float cutoffHz, float sampleHz)

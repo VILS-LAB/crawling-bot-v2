@@ -4,7 +4,7 @@
 namespace
 {
 constexpr uint32_t CALIBRATION_MAGIC = 0x494D5532;
-constexpr uint16_t CALIBRATION_VERSION = 3;
+constexpr uint16_t CALIBRATION_VERSION = 4;
 
 bool eigenSymmetric3(float input[3][3], float values[3], float vectors[3][3])
 {

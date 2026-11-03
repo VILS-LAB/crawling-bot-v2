@@ -1,9 +1,10 @@
 #include "AHRS.h"
 #include "../../include/config.h"
+#include <Display.h>
 
 namespace
 {
-constexpr float FILTER_ACCEL_CUTOFF_HZ = 12.0f;
+constexpr float FILTER_ACCEL_CUTOFF_HZ = 7.5f;
 constexpr float FILTER_GYRO_CUTOFF_HZ = 25.0f;
 constexpr float FILTER_MAG_CUTOFF_HZ = 5.0f;
 constexpr float GYRO_CAL_ACCEL_MIN_G = 0.85f;
@@ -11,13 +12,14 @@ constexpr float GYRO_CAL_ACCEL_MAX_G = 1.15f;
 constexpr float GYRO_CAL_MAX_RATE_DPS = 8.0f;
 constexpr uint32_t GYRO_CAL_SETTLE_MS = 1500;
 constexpr uint16_t CAL_FACE_SAMPLES = 180;
-constexpr uint32_t CAL_FACE_TIMEOUT_MS = 12000;
+constexpr uint32_t CAL_FACE_TIMEOUT_MS = 120000;
 constexpr uint32_t CAL_SAMPLE_INTERVAL_MS = 10;
 }
 
-AHRS::AHRS() : initialized(false), isStatic(true), stationaryStartTime(0),
+AHRS::AHRS(Display *display) : initialized(false), isStatic(true), stationaryStartTime(0),
                robotNumber(1), calibrationLoaded(false),
-               serialTelemetryEnabled(false), gravityReference(G_CONST)
+               serialTelemetryEnabled(true), gravityReference(G_CONST),
+               statusDisplay(display)
 {
     mpu = new MPU9250();
     ImuCalibration::setIdentity(calibration.accelMatrix);
@@ -32,11 +34,11 @@ AHRS::AHRS() : initialized(false), isStatic(true), stationaryStartTime(0),
         calibration.magBias[i] = 0;
         calibration.magScale[i] = 1;
     }
+    calibration.calibrationTemperature = 0;
+    calibration.magFieldNorm = 0;
     accelFilter.configure(FILTER_ACCEL_CUTOFF_HZ, 200.0f, 0.03f, 0.10f);
     gyroFilter.configure(FILTER_GYRO_CUTOFF_HZ, 200.0f, 0.02f, 0.08f);
     magFilter.configure(FILTER_MAG_CUTOFF_HZ, 100.0f, 0.02f, 0.50f);
-    pinMode(IMU_STATUS_LED_PIN, OUTPUT);
-    digitalWrite(IMU_STATUS_LED_PIN, LOW);
 }
 
 AHRS::~AHRS()
@@ -74,14 +76,28 @@ bool AHRS::calibrate()
 {
     if (!initialized)
         return false;
-    if (calibrationLoaded)
+    Serial.println("CAL,STARTUP,warmup_seconds=5");
+    showCalibrationScreen("Starting IMU", "Sensor warm-up", "Please wait...");
+    delay(5000);
+    if (calibrationLoaded && checkCalibrationAtBoot())
     {
-        Serial.print("CAL,USING_SAVED,robot=");
-        Serial.println(robotNumber);
+        Serial.println("CAL,SELF_CHECK,ok");
+        showCalibrationScreen("Calibration OK", "Saved data is valid", "Starting robot...");
+        delay(700);
         return true;
     }
+    if (calibrationLoaded)
+        Serial.println("CAL,SELF_CHECK,recalibration_required");
 
-    return runCalibration(true, true, true);
+    showCalibrationScreen("Calibration needed", "Starting guided setup", "Follow the screen");
+    delay(1000);
+    const bool calibrated = runCalibration(true, true, true);
+    if (!calibrated)
+    {
+        showCalibrationScreen("Calibration failed", "Robot is not ready", "Press q for menu");
+        delay(1500);
+    }
+    return calibrated;
 }
 
 bool AHRS::runCalibration(bool gyro, bool accelerometer, bool magnetometer)
@@ -91,22 +107,22 @@ bool AHRS::runCalibration(bool gyro, bool accelerometer, bool magnetometer)
 
     if (gyro)
     {
+        showCalibrationScreen("Gyro calibration", "Keep robot still", "Starting in 3 sec");
+        delay(3000);
         Serial.println("CAL,gyro,keep the robot completely still");
         if (!calibrateGyroscope())
         {
             Serial.println("CAL,FAIL,gyro calibration rejected");
-            setCalibrationLed(false);
             return false;
         }
     }
 
     if (accelerometer)
     {
-        Serial.println("CAL,accelerometer,move slowly through all orientations");
+        Serial.println("CAL,accelerometer,guided_six_position");
         if (!calibrateAccelerometerCloud())
         {
             Serial.println("CAL,FAIL,accelerometer calibration rejected");
-            setCalibrationLed(false);
             return false;
         }
     }
@@ -116,7 +132,6 @@ bool AHRS::runCalibration(bool gyro, bool accelerometer, bool magnetometer)
         if (!calibrateMagnetometer())
         {
             Serial.println("CAL,FAIL,magnetometer calibration rejected");
-            setCalibrationLed(false);
             return false;
         }
     }
@@ -124,33 +139,19 @@ bool AHRS::runCalibration(bool gyro, bool accelerometer, bool magnetometer)
     if (!saveCalibration())
     {
         Serial.println("CAL,FAIL,storage");
-        setCalibrationLed(false);
         return false;
     }
     calibrationLoaded = true;
-    Serial.println("CAL,magnetometer,done");
-    blinkCalibrationLed(3);
+    showCalibrationScreen("Calibration complete", "All sensor data saved", "Starting robot...");
+    delay(1000);
     Serial.println("CAL,DONE");
-    setCalibrationLed(false);
     return true;
 }
 
 void AHRS::printCalibrationMenu() const
 {
     Serial.println();
-    Serial.println("IMU PANEL");
-    Serial.println("  menu       show this menu");
-    Serial.println("  status     show calibration and live values");
-    Serial.println("  data       print one calibrated sensor snapshot");
-    Serial.println("  stream on  start continuous CSV telemetry");
-    Serial.println("  stream off stop continuous CSV telemetry");
-    Serial.println("  cal gyro   calibrate gyro only");
-    Serial.println("  cal accel  calibrate accelerometer only");
-    Serial.println("  cal mag    calibrate magnetometer only");
-    Serial.println("  cal all    calibrate all sensors");
-    Serial.println("  clear      erase this robot calibration");
-    Serial.println("During calibration: send x to cancel, ? for help");
-    Serial.println("LED: solid=active, short flashes=progress, 3 flashes=success");
+    Serial.println("IMU MENU: 1=gyro 2=accel 3=mag 4=all 5=status 6=clear 0=close");
 }
 
 void AHRS::printCalibrationStatus() const
@@ -175,78 +176,156 @@ void AHRS::clearStoredCalibration()
 
 void AHRS::serviceConsole()
 {
-    static String command;
-    static bool announced = false;
-    if (!announced)
-    {
-        printCalibrationMenu();
-        announced = true;
-    }
+    static bool menuOpen = false;
     while (Serial.available())
     {
         const char character = static_cast<char>(Serial.read());
-        if (character == '\r')
-            continue;
-        if (character == '\n')
+        if (!menuOpen && (character == 'q' || character == 'Q'))
         {
-            command.trim();
-            command.toLowerCase();
-            if (command == "menu" || command == "help")
-                printCalibrationMenu();
-            else if (command == "status")
-                printCalibrationStatus();
-            else if (command == "data")
-            {
-                const ImuTelemetry &imu = telemetry;
-                Serial.print("IMU,DATA,accel=");
-                Serial.print(imu.accel[0], 4); Serial.print(',');
-                Serial.print(imu.accel[1], 4); Serial.print(',');
-                Serial.print(imu.accel[2], 4);
-                Serial.print(",gyro=");
-                Serial.print(imu.gyro[0], 4); Serial.print(',');
-                Serial.print(imu.gyro[1], 4); Serial.print(',');
-                Serial.println(imu.gyro[2], 4);
-            }
-            else if (command == "stream on")
-            {
-                serialTelemetryEnabled = true;
-                Serial.println("IMU,STREAM,on");
-                Serial.println("IMU,t_ms,dt,ax,ay,az,lax,lay,laz,flax,flay,flaz,gx,gy,gz,fgx,fgy,fgz,magx,magy,magz,roll,pitch,yaw,vx,vy,vz,px,py,pz,temp_c,moving");
-            }
-            else if (command == "stream off")
-            {
-                serialTelemetryEnabled = false;
-                Serial.println("IMU,STREAM,off");
-            }
-            else if (command == "cal gyro")
-                runCalibration(true, false, false);
-            else if (command == "cal accel")
-                runCalibration(false, true, false);
-            else if (command == "cal mag")
-                runCalibration(false, false, true);
-            else if (command == "cal all")
-                runCalibration(true, true, true);
-            else if (command == "clear")
-                clearStoredCalibration();
-            else if (command.length() > 0)
-                Serial.println("IMU,ERROR,unknown_command");
-            command = "";
+            menuOpen = true;
+            serialTelemetryEnabled = false;
+            printCalibrationMenu();
+            continue;
         }
-        else if (command.length() < 48)
-            command += character;
+        if (!menuOpen)
+            continue;
+        if (character == '0')
+        {
+            menuOpen = false;
+            serialTelemetryEnabled = true;
+            Serial.println("IMU MENU:CLOSED,stream=on");
+        }
+        else if (character == '1')
+        {
+            menuOpen = false;
+            runCalibration(true, false, false);
+            serialTelemetryEnabled = true;
+        }
+        else if (character == '2')
+        {
+            menuOpen = false;
+            runCalibration(false, true, false);
+            serialTelemetryEnabled = true;
+        }
+        else if (character == '3')
+        {
+            menuOpen = false;
+            runCalibration(false, false, true);
+            serialTelemetryEnabled = true;
+        }
+        else if (character == '4')
+        {
+            menuOpen = false;
+            runCalibration(true, true, true);
+            serialTelemetryEnabled = true;
+        }
+        else if (character == '5')
+        {
+            printCalibrationStatus();
+        }
+        else if (character == '6')
+        {
+            clearStoredCalibration();
+            Serial.println("IMU MENU: calibration cleared; reboot before using");
+        }
     }
+}
+
+bool AHRS::checkCalibrationAtBoot()
+{
+    Serial.println("CAL,SELF_CHECK,keep_still,starting_in=3");
+    showCalibrationScreen("Checking calibration", "Keep robot still", "Starting in 3 sec");
+    delay(3000);
+
+    constexpr uint16_t CHECK_SAMPLES = 250;
+    constexpr float MAX_GYRO_NORM_DPS = 1.5f;
+    constexpr float MAX_ACCEL_NORM_ERROR_G = 0.035f;
+    constexpr float MAX_TEMPERATURE_DELTA_C = 8.0f;
+    constexpr float MAX_MAG_FIELD_DELTA_PERCENT = 0.25f;
+    double accelNormSum = 0;
+    double gyroNormSum = 0;
+    double magNormSum = 0;
+    uint16_t accepted = 0;
+    const uint32_t started = millis();
+    while (accepted < CHECK_SAMPLES && millis() - started < 8000)
+    {
+        if (!mpu->update())
+        {
+            delay(2);
+            continue;
+        }
+        float raw[3] = {mpu->getAccX(), mpu->getAccY(), mpu->getAccZ()};
+        float corrected[3];
+        correctAccelerometer(raw, corrected);
+        const float accelNorm = sqrtf(sq(corrected[0]) + sq(corrected[1]) + sq(corrected[2]));
+        const float gyroNorm = sqrtf(sq(mpu->getGyroX() - calibration.gyroBias[0]) +
+                                     sq(mpu->getGyroY() - calibration.gyroBias[1]) +
+                                     sq(mpu->getGyroZ() - calibration.gyroBias[2]));
+        const float magNorm = sqrtf(sq(mpu->getMagX()) + sq(mpu->getMagY()) +
+                                    sq(mpu->getMagZ()));
+        accelNormSum += accelNorm;
+        gyroNormSum += gyroNorm;
+        magNormSum += magNorm;
+        ++accepted;
+        delay(4);
+    }
+    if (accepted < CHECK_SAMPLES)
+        return false;
+    const float accelError = fabsf(static_cast<float>(accelNormSum / accepted) - 1.0f);
+    const float gyroAverage = static_cast<float>(gyroNormSum / accepted);
+    const float magAverage = static_cast<float>(magNormSum / accepted);
+    const float currentTemperature = mpu->getTemperature();
+    const float temperatureDelta = fabsf(currentTemperature -
+                                         calibration.calibrationTemperature);
+    const bool magValid = calibration.magFieldNorm <= 0 ||
+                          fabsf(magAverage - calibration.magFieldNorm) /
+                                  fmaxf(calibration.magFieldNorm, 1e-3f) <=
+                              MAX_MAG_FIELD_DELTA_PERCENT;
+    Serial.print("CAL,SELF_CHECK,accel_error_g=");
+    Serial.print(accelError, 4);
+    Serial.print(",gyro_norm_dps=");
+    Serial.print(gyroAverage, 3);
+    Serial.print(",mag_norm=");
+    Serial.print(magAverage, 3);
+    Serial.print(",temp_c=");
+    Serial.print(currentTemperature, 2);
+    Serial.print(",temp_delta_c=");
+    Serial.println(temperatureDelta, 2);
+    return accelError <= MAX_ACCEL_NORM_ERROR_G &&
+           gyroAverage <= MAX_GYRO_NORM_DPS &&
+           magValid &&
+           (calibration.calibrationTemperature <= 0 ||
+            temperatureDelta <= MAX_TEMPERATURE_DELTA_C);
 }
 
 bool AHRS::calibrateMagnetometer()
 {
     Serial.println("CAL,magnetometer,rotate slowly in all directions for 15 seconds");
-    setCalibrationLed(true);
+    showCalibrationScreen("Mag calibration", "Rotate slowly", "All directions - 15 sec");
     mpu->calibrateMag();
     for (uint8_t i = 0; i < 3; ++i)
     {
         calibration.magBias[i] = mpu->getMagBias(i);
         calibration.magScale[i] = mpu->getMagScale(i);
     }
+    double fieldSum = 0;
+    uint16_t fieldSamples = 0;
+    const uint32_t started = millis();
+    while (fieldSamples < 50 && millis() - started < 3000)
+    {
+        if (mpu->update())
+        {
+            const float mx = mpu->getMagX();
+            const float my = mpu->getMagY();
+            const float mz = mpu->getMagZ();
+            fieldSum += sqrtf(sq(mx) + sq(my) + sq(mz));
+            ++fieldSamples;
+        }
+        delay(4);
+    }
+    calibration.magFieldNorm = fieldSamples > 0
+                                   ? static_cast<float>(fieldSum / fieldSamples)
+                                   : 0;
     return true;
 }
 
@@ -261,6 +340,7 @@ bool AHRS::loadCalibration()
 bool AHRS::saveCalibration()
 {
     calibration.robotNumber = robotNumber;
+    calibration.calibrationTemperature = mpu->getTemperature();
     return ImuCalibration::save(preferences, calibration);
 }
 
@@ -280,20 +360,20 @@ bool AHRS::consumeCalibrationControl()
     return cancelled;
 }
 
-void AHRS::setCalibrationLed(bool on)
+void AHRS::showCalibrationScreen(const char *title, const char *line1,
+                                 const char *line2)
 {
-    digitalWrite(IMU_STATUS_LED_PIN, on ? HIGH : LOW);
-}
-
-void AHRS::blinkCalibrationLed(uint8_t count)
-{
-    for (uint8_t i = 0; i < count; ++i)
+    if (statusDisplay == nullptr)
+        return;
+    statusDisplay->clear();
+    statusDisplay->print(title, 0, 0);
+    if (line1 != nullptr)
     {
-        setCalibrationLed(false);
-        delay(120);
-        setCalibrationLed(true);
-        delay(120);
+        statusDisplay->print(line1, 0, 20);
+        if (line2 != nullptr)
+            statusDisplay->print(line2, 0, 36);
     }
+    statusDisplay->refresh();
 }
 
 bool AHRS::calibrateGyroscope()
@@ -328,8 +408,6 @@ bool AHRS::calibrateGyroscope()
             sumSquared[i] += value * value;
         }
         ++samples;
-        if ((samples % 250) == 0)
-            blinkCalibrationLed(1);
     }
     if (samples < 2000)
         return false;
@@ -357,7 +435,6 @@ bool AHRS::calibrateAccelerometerCloud()
 {
     const char *axisNames[3] = {"X", "Y", "Z"};
     float positive[3] = {}, negative[3] = {};
-    int8_t firstSideSign[3] = {};
     Serial.println("CAL,accelerometer,guided_six_position");
     Serial.println("CAL,accelerometer,local_g_not_needed_sensor_units_are_g");
     Serial.println("CAL,accelerometer,keep_robot_still_during_each_step");
@@ -372,6 +449,11 @@ bool AHRS::calibrateAccelerometerCloud()
             Serial.print(",side=");
             Serial.println(side == 0 ? "UP" : "DOWN");
             Serial.println("CAL,accelerometer,waiting_for_stable");
+            char requested[24];
+            snprintf(requested, sizeof(requested), "Put %s%c up",
+                     axisNames[axis], side == 0 ? '+' : '-');
+            showCalibrationScreen("Accel calibration", requested, "Hold still - starting");
+            delay(1500);
             uint16_t count = 0;
             double sum = 0;
             uint32_t lastAcceptedAt = 0;
@@ -398,12 +480,24 @@ bool AHRS::calibrateAccelerometerCloud()
                 uint8_t dominantAxis = 0;
                 if (fabsf(sample[1]) > fabsf(sample[dominantAxis])) dominantAxis = 1;
                 if (fabsf(sample[2]) > fabsf(sample[dominantAxis])) dominantAxis = 2;
-                const bool expectedSide = side == 0 ||
-                                          (firstSideSign[axis] > 0 ? sample[axis] < 0
-                                                                   : sample[axis] >= 0);
+                const bool expectedSide = side == 0 ? sample[axis] >= 0 : sample[axis] < 0;
                 if (norm < 0.85f || norm > 1.15f || gyroNorm > 3.0f ||
                     dominantAxis != axis || fabsf(sample[axis]) < 0.75f || !expectedSide)
+                {
+                    if (count == 0 && millis() - phaseStarted > 1200)
+                    {
+                        char current[24];
+                        snprintf(current, sizeof(current), "Current: %c%c",
+                                 "XYZ"[dominantAxis], sample[dominantAxis] >= 0 ? '+' : '-');
+                        char needed[24];
+                        snprintf(needed, sizeof(needed), "Need: %s%c",
+                                 axisNames[axis], side == 0 ? '+' : '-');
+                        showCalibrationScreen("Wrong position", current, needed);
+                    }
                     continue;
+                }
+                if (count == 0)
+                    showCalibrationScreen("Correct position", "Hold still", "Collecting...");
                 sum += sample[axis];
                 ++count;
                 lastAcceptedAt = millis();
@@ -415,10 +509,16 @@ bool AHRS::calibrateAccelerometerCloud()
                     Serial.print(side == 0 ? "UP" : "DOWN");
                     Serial.print(",samples=");
                     Serial.println(count);
+                    char progress[24];
+                    snprintf(progress, sizeof(progress), "Samples %u/%u", count,
+                             CAL_FACE_SAMPLES);
+                    showCalibrationScreen("Correct position", progress, "Keep still");
                 }
             }
             if (count < CAL_FACE_SAMPLES)
             {
+                showCalibrationScreen("Still waiting", "Position not stable", "Press q to cancel");
+                delay(700);
                 Serial.print("CAL,FAIL,accelerometer,axis=");
                 Serial.print(axisNames[axis]);
                 Serial.print(",side=");
@@ -428,8 +528,6 @@ bool AHRS::calibrateAccelerometerCloud()
                 return false;
             }
             *faces[side] = static_cast<float>(sum / count);
-            if (side == 0)
-                firstSideSign[axis] = *faces[side] >= 0 ? 1 : -1;
         }
     }
 
@@ -475,15 +573,16 @@ void AHRS::update()
 
     updateTelemetry(dt);
 
-    const float calibratedAccelNorm = sqrtf(sq(telemetry.accel[0]) +
-                                            sq(telemetry.accel[1]) +
-                                            sq(telemetry.accel[2]));
-    const float accelError = fabsf(calibratedAccelNorm - G_CONST);
-    const float gyroNorm = sqrt(sq(telemetry.gyro[0]) +
-                                sq(telemetry.gyro[1]) +
-                                sq(telemetry.gyro[2]));
+    const float filteredGyroNorm = sqrtf(sq(telemetry.filteredGyro[0]) +
+                                         sq(telemetry.filteredGyro[1]) +
+                                         sq(telemetry.filteredGyro[2]));
+    const float filteredAccelMax = fmaxf(fabsf(telemetry.filteredLinearAccel[0]),
+                                         fmaxf(fabsf(telemetry.filteredLinearAccel[1]),
+                                                fabsf(telemetry.filteredLinearAccel[2])));
+    const bool filteredStationary = filteredAccelMax < 0.035f &&
+                                    filteredGyroNorm < 2.5f;
 
-    if (accelError < MOTION_THRESHOLD && gyroNorm < GYRO_THRESHOLD)
+    if (filteredStationary)
     {
         if (stationaryStartTime == 0)
             stationaryStartTime = now;
@@ -505,7 +604,10 @@ void AHRS::update()
     {
         for (int i = 0; i < 3; i++)
         {
-            velocity[i] += telemetry.filteredLinearAccel[i] * dt;
+            const float acceleration = fabsf(telemetry.filteredLinearAccel[i]) < 0.025f
+                                           ? 0.0f
+                                           : telemetry.filteredLinearAccel[i];
+            velocity[i] += acceleration * dt;
             position[i] += velocity[i] * dt;
         }
     }

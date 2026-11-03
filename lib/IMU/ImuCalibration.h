@@ -18,6 +18,8 @@ struct ImuCalibrationData
     float magBias[3];
     float magScale[3];
     float magMatrix[3][3];
+    float calibrationTemperature;
+    float magFieldNorm;
 };
 
 namespace ImuCalibration

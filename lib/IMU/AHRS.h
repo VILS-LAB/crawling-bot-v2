@@ -10,6 +10,8 @@
 #include "ImuFilters.h"
 #include "ImuRotation.h"
 
+class Display;
+
 struct ImuTelemetry
 {
     float accel[3];       // Calibrated accelerometer, m/s^2, body frame
@@ -30,9 +32,10 @@ struct ImuTelemetry
 class AHRS
 {
 public:
-    AHRS();
+    explicit AHRS(Display *display = nullptr);
     ~AHRS();
     bool begin(uint8_t robotNumber = 1);
+    void setDisplay(Display *display) { statusDisplay = display; }
     void update();
     bool calibrate();
     void serviceConsole();
@@ -93,6 +96,7 @@ private:
     bool calibrateAccelerometerCloud();
     bool calibrateGyroscope();
     bool calibrateMagnetometer();
+    bool checkCalibrationAtBoot();
     bool runCalibration(bool gyro, bool accelerometer, bool magnetometer);
     void printCalibrationMenu() const;
     void printCalibrationStatus() const;
@@ -100,8 +104,8 @@ private:
     bool saveCalibration();
     void clearStoredCalibration();
     bool loadCalibration();
-    void setCalibrationLed(bool on);
-    void blinkCalibrationLed(uint8_t count);
+    void showCalibrationScreen(const char *title, const char *line1 = nullptr,
+                               const char *line2 = nullptr);
     void correctAccelerometer(const float input[3], float output[3]) const;
     void filterTelemetry();
     MPU9250 *mpu;
@@ -124,11 +128,10 @@ private:
     ImuFilterPipeline magFilter;
     ComplementaryAttitude attitude;
     ImuTelemetry telemetry{};
+    Display *statusDisplay;
 
     // Constants
     static constexpr float G_CONST = 9.80665f;                // m/s^2
-    static constexpr float MOTION_THRESHOLD = 0.1f;          // m/s^2 - linear accel threshold
-    static constexpr float GYRO_THRESHOLD = 10.0f;           // deg/s - rotation threshold
     static constexpr unsigned long STATIONARY_TIME_MS = 200; // ms - time to confirm stationary
 };
 

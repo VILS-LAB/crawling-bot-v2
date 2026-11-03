@@ -3,13 +3,13 @@
 
 #include <Arduino.h>
 
-class MedianFilter3
+class MedianFilter5
 {
 public:
     void reset();
     void update(const float input[3], float output[3]);
 private:
-    float history[3][3] = {};
+    float history[3][5] = {};
     uint8_t count = 0;
 };
 
@@ -49,7 +49,7 @@ public:
     void reset();
     void update(const float input[3], float output[3]);
 private:
-    MedianFilter3 median;
+    MedianFilter5 median;
     ButterworthFilter3 butterworth;
     AdaptiveKalman3 adaptiveKalman;
 };
