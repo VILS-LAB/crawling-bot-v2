@@ -24,7 +24,8 @@ void ComplementaryAttitude::reset()
 }
 
 void ComplementaryAttitude::update(const float accel[3], const float gyro[3],
-                                   float dt, float &outRoll, float &outPitch,
+                                   float dt, float accelTrust,
+                                   float &outRoll, float &outPitch,
                                    float &outYaw)
 {
     const float norm = sqrtf(sq(accel[0]) + sq(accel[1]) + sq(accel[2]));
@@ -50,8 +51,8 @@ void ComplementaryAttitude::update(const float accel[3], const float gyro[3],
         if (norm > 0.90f && norm < 1.10f && gyroNorm < 3.0f)
         {
             const float correction = 1.0f - expf(-dt / 0.50f);
-            roll += correction * (accelRoll - roll);
-            pitch += correction * (accelPitch - pitch);
+            roll += accelTrust * correction * (accelRoll - roll);
+            pitch += accelTrust * correction * (accelPitch - pitch);
         }
     }
     outRoll = roll;

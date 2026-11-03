@@ -16,7 +16,7 @@ constexpr uint32_t CAL_FACE_TIMEOUT_MS = 120000;
 constexpr uint32_t CAL_SAMPLE_INTERVAL_MS = 10;
 constexpr float STILL_ACCEL_NORM_TOLERANCE_G = 0.02f;
 constexpr float STILL_GYRO_NORM_MAX_DPS = 0.5f;
-constexpr float STILL_ACCEL_NORM_STDDEV_MAX_G = 0.004f;
+constexpr float STILL_ACCEL_VECTOR_STDDEV_MAX_G = 0.004f;
 constexpr uint8_t STILL_FAILURE_ACCEL_NORM = 1u << 0;
 constexpr uint8_t STILL_FAILURE_GYRO_NORM = 1u << 1;
 constexpr uint8_t STILL_FAILURE_ACCEL_STDDEV = 1u << 2;
@@ -30,7 +30,7 @@ AHRS::AHRS(Display *display) : initialized(false), isStatic(true), stationarySta
                robotNumber(1), calibrationLoaded(false),
                serialTelemetryEnabled(true), deadbandMode(DEADBAND_MODE),
                gravityReference(G_CONST),
-               statusDisplay(display)
+               planarMode(PLANAR_MODE), statusDisplay(display)
 {
     mpu = new MPU9250();
     ImuCalibration::setIdentity(calibration.accelMatrix);
@@ -169,7 +169,7 @@ bool AHRS::runCalibration(bool gyro, bool accelerometer, bool magnetometer)
 void AHRS::printCalibrationMenu() const
 {
     Serial.println();
-    Serial.println("IMU MENU: 1=gyro 2=accel 3=mag 4=all 5=status 6=clear 7=cycle_deadband 0=close");
+    Serial.println("IMU MENU: 1=gyro 2=accel 3=mag 4=all 5=status 6=clear 7=cycle_deadband q=toggle_planar 0=close");
 }
 
 void AHRS::printCalibrationStatus() const
@@ -186,7 +186,19 @@ void AHRS::printCalibrationStatus() const
     Serial.print(",deadband_mode=");
     Serial.print(deadbandMode);
     Serial.print(",deadband_ms2=");
-    Serial.println(DEADBAND_MS2, 4);
+    Serial.print(DEADBAND_MS2, 4);
+    Serial.print(",planar_mode=");
+    Serial.print(planarMode ? 1 : 0);
+    Serial.print(",still=");
+    Serial.print(imu.still ? 1 : 0);
+    Serial.print(",stdA=");
+    Serial.print(imu.stdA, 5);
+    Serial.print(",trust=");
+    Serial.print(imu.trust, 3);
+    Serial.print(",rollG=");
+    Serial.print(imu.rollG, 2);
+    Serial.print(",pitchG=");
+    Serial.println(imu.pitchG, 2);
 }
 
 void AHRS::clearStoredCalibration()
@@ -255,6 +267,12 @@ void AHRS::serviceConsole()
             deadbandMode = (deadbandMode + 1) % 3;
             Serial.print("IMU,DEADBAND,mode=");
             Serial.println(deadbandMode);
+        }
+        else if (character == 'q' || character == 'Q')
+        {
+            planarMode = !planarMode;
+            Serial.print("IMU,PLANAR_MODE=");
+            Serial.println(planarMode ? 1 : 0);
         }
     }
 }
@@ -608,14 +626,23 @@ void AHRS::update()
     const float gyroNorm = sqrtf(sq(telemetry.gyro[0]) +
                                  sq(telemetry.gyro[1]) +
                                  sq(telemetry.gyro[2]));
-    const float oldAccelNormG = accelNormHistoryCount == STILL_ACCEL_WINDOW_SAMPLES
-                                    ? accelNormHistory[accelNormHistoryIndex]
-                                    : 0.0f;
-    accelNormHistorySum -= oldAccelNormG;
-    accelNormHistorySumSquares -= oldAccelNormG * oldAccelNormG;
-    accelNormHistory[accelNormHistoryIndex] = accelNormG;
-    accelNormHistorySum += accelNormG;
-    accelNormHistorySumSquares += accelNormG * accelNormG;
+    const uint16_t historyIndex = accelNormHistoryIndex;
+    if (accelNormHistoryCount == STILL_ACCEL_WINDOW_SAMPLES)
+    {
+        for (uint8_t axis = 0; axis < 3; ++axis)
+        {
+            accelHistorySum[axis] -= accelHistory[historyIndex][axis];
+            accelHistorySumSquares[axis] -=
+                accelHistory[historyIndex][axis] * accelHistory[historyIndex][axis];
+        }
+    }
+    for (uint8_t axis = 0; axis < 3; ++axis)
+    {
+        const float value = (&telemetry.accel[0])[axis] / G_CONST;
+        accelHistory[historyIndex][axis] = value;
+        accelHistorySum[axis] += value;
+        accelHistorySumSquares[axis] += value * value;
+    }
     accelNormHistoryIndex =
         (accelNormHistoryIndex + 1) % STILL_ACCEL_WINDOW_SAMPLES;
     if (accelNormHistoryCount < STILL_ACCEL_WINDOW_SAMPLES)
@@ -634,14 +661,19 @@ void AHRS::update()
     }
     else
     {
-        const float mean = accelNormHistorySum / STILL_ACCEL_WINDOW_SAMPLES;
-        const float variance = fmaxf(
-            0.0f, accelNormHistorySumSquares / STILL_ACCEL_WINDOW_SAMPLES -
-                       mean * mean);
-        accelNormStdDevG = sqrtf(variance);
-        if (accelNormStdDevG >= STILL_ACCEL_NORM_STDDEV_MAX_G)
+        float varianceSum = 0.0f;
+        for (uint8_t axis = 0; axis < 3; ++axis)
+        {
+            const float mean = accelHistorySum[axis] / STILL_ACCEL_WINDOW_SAMPLES;
+            varianceSum += fmaxf(
+                0.0f, accelHistorySumSquares[axis] / STILL_ACCEL_WINDOW_SAMPLES -
+                           mean * mean);
+        }
+        accelNormStdDevG = sqrtf(varianceSum);
+        if (accelNormStdDevG >= STILL_ACCEL_VECTOR_STDDEV_MAX_G)
             stillFailureMask |= STILL_FAILURE_ACCEL_STDDEV;
     }
+    telemetry.stdA = accelNormStdDevG;
     telemetry.stillFailureMask = stillFailureMask;
     const bool stationary = stillFailureMask == 0;
 
@@ -650,7 +682,7 @@ void AHRS::update()
         if (stationaryStartTime == 0)
             stationaryStartTime = now;
 
-        if (now - stationaryStartTime > STATIONARY_TIME_MS)
+        if (now - stationaryStartTime >= STATIONARY_TIME_MS)
         {
             isStatic = true;
             velocity[0] = velocity[1] = velocity[2] = 0;
@@ -662,6 +694,8 @@ void AHRS::update()
         isStatic = false;
     }
     telemetry.still = isStatic;
+    if (isStatic)
+        lastStillTime = now;
 
     if (telemetry.still)
     {
@@ -689,21 +723,28 @@ void AHRS::update()
         biasStillStartTime = 0;
     }
 
-    if (isStatic)
-        return;
-
-    for (int i = 0; i < 3; i++)
+    if (planarMode)
     {
-        const float inputAcceleration = telemetry.filteredLinearAccel[i];
-        const float magnitude = fabsf(inputAcceleration);
-        float acceleration = inputAcceleration;
-        if (deadbandMode == 1)
-            acceleration = magnitude < DEADBAND_MS2 ? 0.0f : inputAcceleration;
-        else if (deadbandMode == 2)
-            acceleration = copysignf(fmaxf(magnitude - DEADBAND_MS2, 0.0f),
-                                     inputAcceleration);
-        velocity[i] += acceleration * dt;
-        position[i] += velocity[i] * dt;
+        velocity[2] = 0;
+        position[2] = 0;
+    }
+    if (!isStatic)
+    {
+        for (int i = 0; i < 3; i++)
+        {
+            if (planarMode && i == 2)
+                continue;
+            const float inputAcceleration = telemetry.filteredLinearAccel[i];
+            const float magnitude = fabsf(inputAcceleration);
+            float acceleration = inputAcceleration;
+            if (deadbandMode == 1)
+                acceleration = magnitude < DEADBAND_MS2 ? 0.0f : inputAcceleration;
+            else if (deadbandMode == 2)
+                acceleration = copysignf(fmaxf(magnitude - DEADBAND_MS2, 0.0f),
+                                         inputAcceleration);
+            velocity[i] += acceleration * dt;
+            position[i] += velocity[i] * dt;
+        }
     }
 }
 
@@ -731,8 +772,36 @@ void AHRS::updateTelemetry(float dt)
     telemetry.quaternion[1] = mpu->getQuaternionX();
     telemetry.quaternion[2] = mpu->getQuaternionY();
     telemetry.quaternion[3] = mpu->getQuaternionZ();
+    const float trustTarget = isStatic
+                                  ? 1.0f
+                                  : (lastStillTime != 0 &&
+                                             millis() - lastStillTime >=
+                                                 ACCEL_TRUST_FALLBACK_MS
+                                         ? 0.05f
+                                         : 0.0f);
+    const float trustAlpha = fminf(1.0f, dt / (ACCEL_TRUST_TRANSITION_MS * 0.001f));
+    telemetry.trust += trustAlpha * (trustTarget - telemetry.trust);
     attitude.update(correctedAccel, medianGyro, dt,
+                    telemetry.trust,
                     telemetry.roll, telemetry.pitch, telemetry.yaw);
+    if (!shadowInitialized)
+    {
+        shadowRoll = telemetry.roll;
+        shadowPitch = telemetry.pitch;
+        shadowInitialized = true;
+    }
+    else if (isStatic)
+    {
+        shadowRoll = telemetry.roll;
+        shadowPitch = telemetry.pitch;
+    }
+    else
+    {
+        shadowRoll += medianGyro[0] * dt;
+        shadowPitch += medianGyro[1] * dt;
+    }
+    telemetry.rollG = shadowRoll;
+    telemetry.pitchG = shadowPitch;
     telemetry.temperature = mpu->getTemperature();
 
     float worldAccel[3];

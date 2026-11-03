@@ -11,6 +11,7 @@ class ComplementaryAttitude
 public:
     void reset();
     void update(const float accel[3], const float gyro[3], float dt,
+                float accelTrust,
                 float &roll, float &pitch, float &yaw);
 private:
     bool initialized = false;

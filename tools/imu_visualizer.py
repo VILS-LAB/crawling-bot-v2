@@ -18,6 +18,7 @@ FIELDS = [
     "magx", "magy", "magz",
     "roll", "pitch", "yaw", "vx", "vy", "vz",
     "px", "py", "pz", "temp_c", "moving", "still", "still_failure_mask",
+    "stdA", "trust", "rollG", "pitchG",
 ]
 
 
@@ -100,23 +101,38 @@ def main():
         figure.add_subplot(grid[2, 0]),
         figure.add_subplot(grid[2, 1]),
     ]
+    temperature_text = figure.text(
+        0.02, 0.02, "Temperature: -- °C", fontsize=12,
+        bbox={"facecolor": "white", "alpha": 0.8, "edgecolor": "0.7"},
+    )
     attitude = figure.add_subplot(grid[:2, 2:], projection="3d")
-    trajectory = figure.add_subplot(grid[2, 2:], projection="3d")
+    trajectory = figure.add_subplot(grid[2, 2:])
+    field_names = FIELDS
+
+    def parse_telemetry(line):
+        nonlocal field_names
+        values = line.split(",")
+        if len(values) > 1 and values[1] == "t_ms":
+            field_names = values[1:]
+            return None
+        if len(values) < 2 or len(values[1:]) != len(field_names):
+            return None
+        try:
+            return dict(zip(field_names, map(float, values[1:])))
+        except ValueError:
+            return None
 
     def read_serial(_frame):
         while serial_port.in_waiting:
             line = serial_port.readline().decode("utf-8", errors="ignore").strip()
             if not line.startswith("IMU,"):
                 continue
-            values = line.split(",")[1:]
-            if len(values) != len(FIELDS):
+            sample = parse_telemetry(line)
+            if sample is None:
                 continue
-            try:
-                samples.append(dict(zip(FIELDS, map(float, values))))
-            except ValueError:
-                continue
+            samples.append(sample)
 
-        if not samples:
+        if not samples or not {"stdA", "trust", "rollG", "pitchG"} <= samples[-1].keys():
             return
         data = list(samples)
         time = [(item["t_ms"] - data[0]["t_ms"]) / 1000 for item in data]
@@ -153,9 +169,25 @@ def main():
         axes[1].set_ylabel("m/s")
         axes[1].legend(loc="upper left")
 
-        axes[2].plot(time, [item["temp_c"] for item in data], color="tab:red")
-        axes[2].set_title("Temperature (°C)")
-        axes[2].set_ylabel("°C")
+        axes[2].plot(time, [item["roll"] for item in data],
+                     label="attitude roll")
+        axes[2].plot(time, [item["pitch"] for item in data],
+                     label="attitude pitch")
+        axes[2].plot(time, [item["rollG"] for item in data],
+                     "--", label="gyro-only roll")
+        axes[2].plot(time, [item["pitchG"] for item in data],
+                     "--", label="gyro-only pitch")
+        axes[2].set_title("Attitude vs gyro-only shadow (deg)")
+        axes[2].set_ylabel("degrees")
+        axes[2].legend(loc="upper left", fontsize="small")
+        axes[2].grid(alpha=0.25)
+        last = data[-1]
+        temperature_text.set_text(
+            f"Temperature: {last['temp_c']:.1f} °C   "
+            f"Trust: {last['trust']:.2f}   "
+            f"stdA: {last['stdA']:.5f} g   "
+            f"Still: {'yes' if last['still'] else 'no'}"
+        )
 
         attitude.clear()
         attitude.set_title("Robot 3D orientation")
@@ -165,7 +197,6 @@ def main():
         attitude.set_xlabel("X")
         attitude.set_ylabel("Y")
         attitude.set_zlabel("Z")
-        last = data[-1]
         attitude.add_collection3d(
             Poly3DCollection(
                 robot_body(last["roll"], last["pitch"], last["yaw"]),
@@ -198,29 +229,51 @@ def main():
         )
 
         trajectory.clear()
-        trajectory.set_title("Estimated 3D position (dead reckoning)")
-        trajectory.set_xlabel("X (m)")
-        trajectory.set_ylabel("Y (m)")
-        trajectory.set_zlabel("Z (m)")
-        positions = (
-            [item["px"] for item in data],
-            [item["py"] for item in data],
-            [item["pz"] for item in data],
+        trajectory.set_title("Top-down displacement (dead reckoning)")
+        trajectory.set_xlabel("ΔX (m)")
+        trajectory.set_ylabel("ΔY (m)")
+        x_positions = [item["px"] for item in data]
+        y_positions = [item["py"] for item in data]
+        x_current, y_current = x_positions[-1], y_positions[-1]
+        trajectory.plot(
+            x_positions, y_positions, color="tab:purple", linewidth=2,
+            label="path",
         )
-        trajectory.plot(*positions, color="tab:purple", linewidth=2)
         trajectory.scatter(
-            positions[0][-1], positions[1][-1], positions[2][-1],
-            color="black", s=25, label="current",
+            0, 0, color="tab:green", s=55, marker="o", label="start",
+            zorder=3,
         )
-        trajectory.legend(loc="upper left")
+        trajectory.scatter(
+            x_current, y_current, color="tab:red", s=60, marker="x",
+            label="current", zorder=3,
+        )
+        trajectory.plot(
+            (0, x_current), (0, y_current), color="tab:red",
+            linestyle=":", alpha=0.7,
+        )
+        trajectory.axhline(0, color="0.75", linewidth=0.8)
+        trajectory.axvline(0, color="0.75", linewidth=0.8)
+        distance = math.hypot(x_current, y_current)
+        trajectory.text(
+            0.02, 0.96,
+            f"ΔX {x_current:.3f} m   ΔY {y_current:.3f} m   "
+            f"distance {distance:.3f} m",
+            transform=trajectory.transAxes,
+            verticalalignment="top",
+            bbox={"facecolor": "white", "alpha": 0.8, "edgecolor": "0.7"},
+        )
+        trajectory.legend(loc="lower left", fontsize="small")
         extent = max(
-            max(max(values) - min(values), 0.1) for values in positions
+            max(max(x_positions) - min(x_positions),
+                max(y_positions) - min(y_positions), 0.1),
+            0.2,
         )
-        center = [0.5 * (max(values) + min(values)) for values in positions]
-        half_extent = 0.55 * extent
-        trajectory.set_xlim(center[0] - half_extent, center[0] + half_extent)
-        trajectory.set_ylim(center[1] - half_extent, center[1] + half_extent)
-        trajectory.set_zlim(center[2] - half_extent, center[2] + half_extent)
+        center_x = 0.5 * (max(x_positions) + min(x_positions))
+        center_y = 0.5 * (max(y_positions) + min(y_positions))
+        half_extent = 0.6 * extent
+        trajectory.set_xlim(center_x - half_extent, center_x + half_extent)
+        trajectory.set_ylim(center_y - half_extent, center_y + half_extent)
+        trajectory.set_aspect("equal", adjustable="box")
 
         figure.tight_layout()
 

@@ -27,6 +27,10 @@ struct ImuTelemetry
     float yaw;
     float temperature;
     float dt;
+    float stdA;
+    float trust;
+    float rollG;
+    float pitchG;
     bool still;
     uint8_t stillFailureMask;
     float gyroBias[3];
@@ -128,25 +132,33 @@ private:
     bool calibrationLoaded;
     bool serialTelemetryEnabled;
     uint8_t deadbandMode;
+    bool planarMode;
     float initialGyroBias[3] = {};
     ImuFilterPipeline accelFilter;
     MedianFilter5 gyroMedianFilter;
     ImuFilterPipeline gyroFilter;
     ImuFilterPipeline magFilter;
     ComplementaryAttitude attitude;
+    float shadowRoll = 0;
+    float shadowPitch = 0;
+    bool shadowInitialized = false;
+    unsigned long lastStillTime = 0;
     ImuTelemetry telemetry{};
     Display *statusDisplay;
 
     // Constants
     static constexpr float G_CONST = 9.80665f;                // m/s^2
     static constexpr unsigned long STATIONARY_TIME_MS = 200; // ms - time to confirm stationary
+    static constexpr unsigned long ACCEL_TRUST_TRANSITION_MS = 100;
+    static constexpr unsigned long ACCEL_TRUST_FALLBACK_MS = 5000;
     static constexpr uint16_t STILL_ACCEL_WINDOW_SAMPLES = 40;
+    static constexpr bool PLANAR_MODE = true;
 
-    float accelNormHistory[STILL_ACCEL_WINDOW_SAMPLES] = {};
+    float accelHistory[STILL_ACCEL_WINDOW_SAMPLES][3] = {};
     uint16_t accelNormHistoryIndex = 0;
     uint16_t accelNormHistoryCount = 0;
-    float accelNormHistorySum = 0;
-    float accelNormHistorySumSquares = 0;
+    float accelHistorySum[3] = {};
+    float accelHistorySumSquares[3] = {};
 };
 
 #endif // AHRS_H
