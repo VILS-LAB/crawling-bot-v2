@@ -16,7 +16,7 @@ FIELDS = [
     "flax", "flay", "flaz", "gx", "gy", "gz", "fgx", "fgy", "fgz",
     "magx", "magy", "magz",
     "roll", "pitch", "yaw", "vx", "vy", "vz",
-    "px", "py", "pz", "temp_c", "moving",
+    "px", "py", "pz", "temp_c", "moving", "still", "still_failure_mask",
 ]
 
 

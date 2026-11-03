@@ -27,6 +27,8 @@ struct ImuTelemetry
     float yaw;
     float temperature;
     float dt;
+    bool still;
+    uint8_t stillFailureMask;
 };
 
 class AHRS
@@ -133,6 +135,13 @@ private:
     // Constants
     static constexpr float G_CONST = 9.80665f;                // m/s^2
     static constexpr unsigned long STATIONARY_TIME_MS = 200; // ms - time to confirm stationary
+    static constexpr uint16_t STILL_ACCEL_WINDOW_SAMPLES = 40;
+
+    float accelNormHistory[STILL_ACCEL_WINDOW_SAMPLES] = {};
+    uint16_t accelNormHistoryIndex = 0;
+    uint16_t accelNormHistoryCount = 0;
+    float accelNormHistorySum = 0;
+    float accelNormHistorySumSquares = 0;
 };
 
 #endif // AHRS_H

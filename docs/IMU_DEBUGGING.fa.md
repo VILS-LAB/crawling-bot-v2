@@ -22,6 +22,7 @@ python3 tools/imu_visualizer.py /dev/cu.usbmodem1101 --samples 150
 - `lax,lay,laz` باید نزدیک صفر باشند؛
 - `flax,flay,flaz` باید نرم‌تر و نزدیک صفر باشند؛
 - velocity باید صفر بماند؛
+- `still` باید یک باشد؛
 - `moving` باید صفر باشد.
 
 ## تست تک‌محوره
@@ -65,6 +66,11 @@ fgx..fgz     gyro filtered و ورودی attitude
 roll/pitch/yaw attitude
 vx..vz       velocity dead reckoning
 px..pz       position dead reckoning
+still        سکون تأییدشده پس از hold حداقل ۲۰۰ms
+still_failure_mask
+             بیت ۰: norm شتاب خارج از 1g±0.02g
+             بیت ۱: norm ژیروسکوپ حداقل 0.5 dps
+             بیت ۲: انحراف معیار norm شتاب در پنجره‌ی ۴۰ نمونه
 ```
 
 موقعیت IMU-only در مسیر طولانی قابل اعتماد نیست و باید با مرجع بیرونی ارزیابی

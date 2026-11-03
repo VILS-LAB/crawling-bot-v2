@@ -14,6 +14,12 @@ constexpr uint32_t GYRO_CAL_SETTLE_MS = 1500;
 constexpr uint16_t CAL_FACE_SAMPLES = 180;
 constexpr uint32_t CAL_FACE_TIMEOUT_MS = 120000;
 constexpr uint32_t CAL_SAMPLE_INTERVAL_MS = 10;
+constexpr float STILL_ACCEL_NORM_TOLERANCE_G = 0.02f;
+constexpr float STILL_GYRO_NORM_MAX_DPS = 0.5f;
+constexpr float STILL_ACCEL_NORM_STDDEV_MAX_G = 0.004f;
+constexpr uint8_t STILL_FAILURE_ACCEL_NORM = 1u << 0;
+constexpr uint8_t STILL_FAILURE_GYRO_NORM = 1u << 1;
+constexpr uint8_t STILL_FAILURE_ACCEL_STDDEV = 1u << 2;
 }
 
 AHRS::AHRS(Display *display) : initialized(false), isStatic(true), stationaryStartTime(0),
@@ -573,16 +579,51 @@ void AHRS::update()
 
     updateTelemetry(dt);
 
-    const float filteredGyroNorm = sqrtf(sq(telemetry.filteredGyro[0]) +
-                                         sq(telemetry.filteredGyro[1]) +
-                                         sq(telemetry.filteredGyro[2]));
-    const float filteredAccelMax = fmaxf(fabsf(telemetry.filteredLinearAccel[0]),
-                                         fmaxf(fabsf(telemetry.filteredLinearAccel[1]),
-                                                fabsf(telemetry.filteredLinearAccel[2])));
-    const bool filteredStationary = filteredAccelMax < 0.035f &&
-                                    filteredGyroNorm < 2.5f;
+    const float accelNormG = sqrtf(sq(telemetry.accel[0]) +
+                                   sq(telemetry.accel[1]) +
+                                   sq(telemetry.accel[2])) /
+                             G_CONST;
+    const float gyroNorm = sqrtf(sq(telemetry.gyro[0]) +
+                                 sq(telemetry.gyro[1]) +
+                                 sq(telemetry.gyro[2]));
+    const float oldAccelNormG = accelNormHistoryCount == STILL_ACCEL_WINDOW_SAMPLES
+                                    ? accelNormHistory[accelNormHistoryIndex]
+                                    : 0.0f;
+    accelNormHistorySum -= oldAccelNormG;
+    accelNormHistorySumSquares -= oldAccelNormG * oldAccelNormG;
+    accelNormHistory[accelNormHistoryIndex] = accelNormG;
+    accelNormHistorySum += accelNormG;
+    accelNormHistorySumSquares += accelNormG * accelNormG;
+    accelNormHistoryIndex =
+        (accelNormHistoryIndex + 1) % STILL_ACCEL_WINDOW_SAMPLES;
+    if (accelNormHistoryCount < STILL_ACCEL_WINDOW_SAMPLES)
+        ++accelNormHistoryCount;
 
-    if (filteredStationary)
+    uint8_t stillFailureMask = 0;
+    if (fabsf(accelNormG - 1.0f) >= STILL_ACCEL_NORM_TOLERANCE_G)
+        stillFailureMask |= STILL_FAILURE_ACCEL_NORM;
+    if (gyroNorm >= STILL_GYRO_NORM_MAX_DPS)
+        stillFailureMask |= STILL_FAILURE_GYRO_NORM;
+
+    float accelNormStdDevG = 0.0f;
+    if (accelNormHistoryCount < STILL_ACCEL_WINDOW_SAMPLES)
+    {
+        stillFailureMask |= STILL_FAILURE_ACCEL_STDDEV;
+    }
+    else
+    {
+        const float mean = accelNormHistorySum / STILL_ACCEL_WINDOW_SAMPLES;
+        const float variance = fmaxf(
+            0.0f, accelNormHistorySumSquares / STILL_ACCEL_WINDOW_SAMPLES -
+                       mean * mean);
+        accelNormStdDevG = sqrtf(variance);
+        if (accelNormStdDevG >= STILL_ACCEL_NORM_STDDEV_MAX_G)
+            stillFailureMask |= STILL_FAILURE_ACCEL_STDDEV;
+    }
+    telemetry.stillFailureMask = stillFailureMask;
+    const bool stationary = stillFailureMask == 0;
+
+    if (stationary)
     {
         if (stationaryStartTime == 0)
             stationaryStartTime = now;
@@ -591,7 +632,6 @@ void AHRS::update()
         {
             isStatic = true;
             velocity[0] = velocity[1] = velocity[2] = 0;
-            return;
         }
     }
     else
@@ -599,17 +639,18 @@ void AHRS::update()
         stationaryStartTime = 0;
         isStatic = false;
     }
+    telemetry.still = isStatic;
 
-    if (!isStatic)
+    if (isStatic)
+        return;
+
+    for (int i = 0; i < 3; i++)
     {
-        for (int i = 0; i < 3; i++)
-        {
-            const float acceleration = fabsf(telemetry.filteredLinearAccel[i]) < 0.025f
-                                           ? 0.0f
-                                           : telemetry.filteredLinearAccel[i];
-            velocity[i] += acceleration * dt;
-            position[i] += velocity[i] * dt;
-        }
+        const float acceleration = fabsf(telemetry.filteredLinearAccel[i]) < 0.025f
+                                       ? 0.0f
+                                       : telemetry.filteredLinearAccel[i];
+        velocity[i] += acceleration * dt;
+        position[i] += velocity[i] * dt;
     }
 }
 
