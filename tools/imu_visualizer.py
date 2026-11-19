@@ -11,6 +11,9 @@ from matplotlib.animation import FuncAnimation
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
 
+# Column order of the firmware CSV, without the leading "IMU," prefix.
+# The firmware also prints this list as a header line, so a mismatch here is
+# recoverable at runtime; this copy is only the fallback for old firmware.
 FIELDS = [
     "t_ms", "dt", "ax", "ay", "az", "lax", "lay", "laz",
     "flax", "flay", "flaz", "gx", "gy", "gz", "gbx", "gby", "gbz",
@@ -19,18 +22,65 @@ FIELDS = [
     "roll", "pitch", "yaw", "vx", "vy", "vz",
     "px", "py", "pz", "temp_c", "moving", "still", "still_failure_mask",
     "stdA", "trust", "rollG", "pitchG",
+    # --- appended by the PX4-based IMU stack ---
+    "ebx", "eby", "ebz",          # estimator integral gyro bias (deg/s)
+    "acc_norm_g",                 # |accel| in g
+    "mag_norm",                   # |mag| in uT
+    "rate_hz",                    # measured IMU sampling rate
+    "accel_rms_g",                # accel calibration residual
+    "mag_rms_ut",                 # mag calibration residual
+    "mag_fit",                    # 0 none / 1 sphere / 2 ellipsoid
+    "est_init",                   # estimator initialized flag
 ]
+
+# Columns this visualizer actually needs. Anything else is optional, so the
+# tool keeps working against older firmware that does not send them.
+REQUIRED_FIELDS = {
+    "t_ms", "lax", "lay", "laz", "flax", "flay", "flaz",
+    "gx", "gy", "gz", "fgx", "fgy", "fgz",
+    "vx", "vy", "vz", "px", "py", "pz",
+    "roll", "pitch", "yaw", "rollG", "pitchG",
+    "temp_c", "still", "trust", "stdA",
+}
+
+
+# The firmware world frame is X = north, Y = west, Z = up, and yaw is measured
+# counter-clockwise from +X. The firmware body frame is X = forward, Y = left,
+# Z = up (FLU). The robot is mounted with body +Y forward and body +X right, so
+# its nose direction in world is R @ (0,1,0) = (-sin yaw, cos yaw, 0) in
+# (north, west, up), and the compass heading is
+#
+#     heading = atan2(east, north) = atan2(-cos yaw, -sin yaw) = (270 - yaw) mod 360
+HEADING_OFFSET_DEG = 270.0
+
+
+def compass_heading(yaw_deg):
+    """Compass heading (0 = north, clockwise) from the firmware yaw (degrees)."""
+    return (HEADING_OFFSET_DEG - yaw_deg) % 360.0
 
 
 def rotation_matrix(roll, pitch, yaw):
+    """Body -> display rotation.
+
+    Body is the firmware's FLU frame (X forward, Y left, Z up). Display is a
+    compass frame (east, north, up) so the 3D view matches the top-down map:
+    north up, east right. The firmware world is (north, west, up), so
+    east = -west.
+    """
     rx, ry, rz = map(math.radians, (roll, pitch, yaw))
     cr, sr = math.cos(rx), math.sin(rx)
     cp, sp = math.cos(ry), math.sin(ry)
     cy, sy = math.cos(rz), math.sin(rz)
-    return (
+    body_to_world = (
         (cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr),
         (sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr),
         (-sp, cp * sr, cp * cr),
+    )
+    # world (north, west, up) -> display (east, north, up)
+    return (
+        tuple(-body_to_world[1][column] for column in range(3)),
+        body_to_world[0],
+        body_to_world[2],
     )
 
 
@@ -112,15 +162,22 @@ def main():
     def parse_telemetry(line):
         nonlocal field_names
         values = line.split(",")
+        # Header line: learn the real column layout from the firmware.
         if len(values) > 1 and values[1] == "t_ms":
             field_names = values[1:]
             return None
-        if len(values) < 2 or len(values[1:]) != len(field_names):
+        if len(values) < 2:
+            return None
+        payload = values[1:]
+        # Accept both an exact match and a longer line (newer firmware with
+        # appended columns): map by name, ignore the extras.
+        if len(payload) < len(field_names):
             return None
         try:
-            return dict(zip(field_names, map(float, values[1:])))
+            sample = dict(zip(field_names, map(float, payload)))
         except ValueError:
             return None
+        return sample if REQUIRED_FIELDS <= sample.keys() else None
 
     def read_serial(_frame):
         while serial_port.in_waiting:
@@ -132,7 +189,7 @@ def main():
                 continue
             samples.append(sample)
 
-        if not samples or not {"stdA", "trust", "rollG", "pitchG"} <= samples[-1].keys():
+        if not samples or not REQUIRED_FIELDS <= samples[-1].keys():
             return
         data = list(samples)
         time = [(item["t_ms"] - data[0]["t_ms"]) / 1000 for item in data]
@@ -182,11 +239,14 @@ def main():
         axes[2].legend(loc="upper left", fontsize="small")
         axes[2].grid(alpha=0.25)
         last = data[-1]
+        rate = last.get("rate_hz")
+        rate_text = f"   Rate: {rate:.0f} Hz" if rate is not None else ""
         temperature_text.set_text(
             f"Temperature: {last['temp_c']:.1f} °C   "
             f"Trust: {last['trust']:.2f}   "
             f"stdA: {last['stdA']:.5f} g   "
             f"Still: {'yes' if last['still'] else 'no'}"
+            f"{rate_text}"
         )
 
         attitude.clear()
@@ -194,9 +254,9 @@ def main():
         attitude.set_xlim(-1.25, 1.25)
         attitude.set_ylim(-1.25, 1.25)
         attitude.set_zlim(-1.25, 1.25)
-        attitude.set_xlabel("X")
-        attitude.set_ylabel("Y")
-        attitude.set_zlabel("Z")
+        attitude.set_xlabel("X (east)")
+        attitude.set_ylabel("Y (north)")
+        attitude.set_zlabel("Z (up)")
         attitude.add_collection3d(
             Poly3DCollection(
                 robot_body(last["roll"], last["pitch"], last["yaw"]),
@@ -223,17 +283,21 @@ def main():
             )
         attitude.text2D(
             0.02, 0.96,
-            f"Forward: +Y   R {last['roll']:.1f}°  "
-            f"P {last['pitch']:.1f}°  Y {last['yaw']:.1f}°",
+            f"Forward: body +Y   R {last['roll']:.1f}°  "
+            f"P {last['pitch']:.1f}°  Y {last['yaw']:.1f}°\n"
+            f"heading {compass_heading(last['yaw']):.1f}° (0 = north, clockwise)",
             transform=attitude.transAxes,
         )
 
         trajectory.clear()
         trajectory.set_title("Top-down displacement (dead reckoning)")
-        trajectory.set_xlabel("ΔX (m)")
-        trajectory.set_ylabel("ΔY (m)")
-        x_positions = [item["px"] for item in data]
-        y_positions = [item["py"] for item in data]
+        # The firmware world is X = north, Y = west. Plot a compass-style map
+        # instead: north up, east right.
+        trajectory.set_xlabel("Δ east (m)")
+        trajectory.set_ylabel("Δ north (m)")
+        # px = world X = north, py = world Y = west  ->  east = -west
+        x_positions = [-item["py"] for item in data]
+        y_positions = [item["px"] for item in data]
         x_current, y_current = x_positions[-1], y_positions[-1]
         trajectory.plot(
             x_positions, y_positions, color="tab:purple", linewidth=2,
@@ -256,7 +320,7 @@ def main():
         distance = math.hypot(x_current, y_current)
         trajectory.text(
             0.02, 0.96,
-            f"ΔX {x_current:.3f} m   ΔY {y_current:.3f} m   "
+            f"Δ east {x_current:.3f} m   Δ north {y_current:.3f} m   "
             f"distance {distance:.3f} m",
             transform=trajectory.transAxes,
             verticalalignment="top",

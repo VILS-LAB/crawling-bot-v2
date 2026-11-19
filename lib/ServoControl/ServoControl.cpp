@@ -1,15 +1,74 @@
 #include "ServoControl.h"
+#include "../../include/config.h"
+
+namespace
+{
+// Pulse range handed to attach(). Keep in sync with expectedPulseUs().
+constexpr int kMinPulseUs = MIN_PULSE_WIDTH;
+constexpr int kMaxPulseUs = MAX_PULSE_WIDTH;
+
+int expectedPulseUs(int angle)
+{
+    return map(angle, 0, 180, kMinPulseUs, kMaxPulseUs);
+}
+} // namespace
 
 ServoControl::ServoControl(uint8_t pinDown, uint8_t pinUp) 
     : pinDown(pinDown), pinUp(pinUp), 
       currentDownAngle(INITIAL_DOWN_ANGLE), 
-      currentUpAngle(INITIAL_UP_ANGLE) {
+      currentUpAngle(INITIAL_UP_ANGLE),
+      downAttached(false),
+      upAttached(false) {
 }
 
-void ServoControl::begin() {
-    servoDown.attach(pinDown, MIN_PULSE_WIDTH, MAX_PULSE_WIDTH);
-    servoUp.attach(pinUp, MIN_PULSE_WIDTH, MAX_PULSE_WIDTH);
-    setInitialPosition();
+bool ServoControl::begin() {
+    downAttached = servoDown.attach(pinDown, kMinPulseUs, kMaxPulseUs) != 0;
+    upAttached = servoUp.attach(pinUp, kMinPulseUs, kMaxPulseUs) != 0;
+
+    if (downAttached)
+        servoDown.write(INITIAL_DOWN_ANGLE);
+    if (upAttached)
+        servoUp.write(INITIAL_UP_ANGLE);
+
+    currentDownAngle = INITIAL_DOWN_ANGLE;
+    currentUpAngle = INITIAL_UP_ANGLE;
+
+    return downAttached && upAttached;
+}
+
+bool ServoControl::isDownAttached() {
+    return servoDown.attached();
+}
+
+bool ServoControl::isUpAttached() {
+    return servoUp.attached();
+}
+
+ServoHealthCode ServoControl::checkDown() {
+    if (!downAttached)
+        return SERVO_HEALTH_ATTACH_FAILED;
+    return checkServo(servoDown, currentDownAngle);
+}
+
+ServoHealthCode ServoControl::checkUp() {
+    if (!upAttached)
+        return SERVO_HEALTH_ATTACH_FAILED;
+    return checkServo(servoUp, currentUpAngle);
+}
+
+ServoHealthCode ServoControl::checkServo(Servo &servo, int angle) {
+    if (!servo.attached())
+        return SERVO_HEALTH_NOT_ATTACHED;
+
+    servo.write(angle);
+    delay(SERVO_HEALTH_SETTLE_MS);
+
+    const int expected = expectedPulseUs(angle);
+    const int actual = servo.readMicroseconds();
+    if (abs(actual - expected) > SERVO_HEALTH_PULSE_TOLERANCE_US)
+        return SERVO_HEALTH_PULSE_MISMATCH;
+
+    return SERVO_HEALTH_OK;
 }
 
 void ServoControl::moveDown(int angle) {

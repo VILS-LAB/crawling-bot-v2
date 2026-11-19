@@ -9,3 +9,9 @@ _codeql_detected_source_root
 github-reference-repositories/
 betaflight/
 PX4-Autopilot/
+# host test build artifacts
+test/host/build/
+
+# python caches
+__pycache__/
+*.pyc

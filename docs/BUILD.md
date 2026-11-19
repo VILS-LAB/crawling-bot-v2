@@ -56,6 +56,11 @@ On first boot, the robot will prompt for a robot number (1-8) via Serial Monitor
 - Servo Down - GPIO 32
 - Servo Up - GPIO 33
 
+> ⚠️ On the ESP32-S3 with `ESP32Servo` 0.13.0, GPIO 32/33 are **not** accepted
+> for PWM (the library only allows 1–21, 35–45, 47, 48 on the S3). The attach
+> will fail and the boot health check reports code `1` (`ATTACH_FAILED`).
+> See [SERVO_HEALTH.md](SERVO_HEALTH.md#pin-note-for-the-esp32-s3).
+
 ### Power
 - ESP32-S3 via USB-C or external 5V power
 - Servos should have adequate power supply

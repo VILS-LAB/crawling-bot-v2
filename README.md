@@ -120,6 +120,9 @@ A hands-on robotics platform where AI students apply **Reinforcement Learning** 
 | 🔧 [BUILD.md](docs/BUILD.md)                     | Detailed build & deployment           |
 | 💻 [EXAMPLES.md](docs/EXAMPLES.md)               | RL code examples & snippets           |
 | 📊 [PROJECT_SUMMARY.md](docs/PROJECT_SUMMARY.md) | Full technical documentation          |
+| 🦿 [SERVO_HEALTH.md](docs/SERVO_HEALTH.md)       | Servo attach, health-check codes, boot order |
+| 🧭 [docs/imu/](docs/imu/README.md)               | **IMU/AHRS architecture, calibration, PX4 port map** |
+| 🕓 [IMPLEMENTATION_HISTORY.md](docs/imu/IMPLEMENTATION_HISTORY.md) | **IMU: current vs previous vs original `main`, and why each rewrite happened** |
 | 📈 [IMU_DEBUGGING.fa.md](docs/IMU_DEBUGGING.fa.md) | Live plots, 3D view, and IMU tests     |
 | 🔄 [MIGRATION.md](docs/MIGRATION.md)             | Arduino to PlatformIO migration notes |
 
@@ -128,6 +131,15 @@ A hands-on robotics platform where AI students apply **Reinforcement Learning** 
 **Hardware:** ESP32-S3, MPU9250 (9-DOF), 2x Servos, OLED Display  
 **Software:** 5 modular libraries (Display, AHRS, ServoControl, Network, Training)  
 **Power:** 12V adapter
+
+The IMU/AHRS stack is a port of PX4's IMU path (filters, quaternion attitude
+estimator, calibration math) running in a dedicated task on core 1. See
+[docs/imu/ARCHITECTURE.md](docs/imu/ARCHITECTURE.md) for the full design and
+[docs/imu/CALIBRATION.md](docs/imu/CALIBRATION.md) for the calibration guide.
+
+This is the third generation of the IMU stack. For what the previous two did,
+what was broken, and what changed, see
+[docs/imu/IMPLEMENTATION_HISTORY.md](docs/imu/IMPLEMENTATION_HISTORY.md).
 
 > 📖 **Full specs:** See [PROJECT_SUMMARY.md](docs/PROJECT_SUMMARY.md#hardware) and [PROJECT_SUMMARY.md](docs/PROJECT_SUMMARY.md#architecture)
 

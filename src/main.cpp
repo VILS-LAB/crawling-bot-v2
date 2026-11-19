@@ -78,6 +78,17 @@ void setup()
             delay(1000);
     }
 
+#if ENABLE_SERVOS
+    // Attach and park the servos before calibration: the legs must be in a
+    // known, still pose while the IMU is calibrated, and the attach result is
+    // what the health check reports later.
+    showBootMessage("Attaching servos...");
+    if (!servos.begin())
+        Serial.println("ERROR,SERVO_ATTACH_FAILED");
+#endif
+
+    // Calibration runs before the sampling task starts: it needs exclusive
+    // access to the sensor and it drives the OLED.
     showBootMessage("Keep still...");
     if (!ahrs.calibrate())
     {
@@ -85,11 +96,21 @@ void setup()
         Serial.println("ERROR,IMU_CALIBRATION_FAILED,OLED_AVAILABLE");
     }
 
-#if ENABLE_SERVOS
-    servos.begin();
-#endif
+    if (!ahrs.startTask())
+    {
+        showBootMessage("IMU TASK FAILED");
+        Serial.println("ERROR,IMU_TASK_FAILED");
+        while (true)
+            delay(1000);
+    }
 
-    healthCheck.run();
+    // The servo test moves the legs, so it runs after calibration: moving
+    // during the still window would corrupt the gyro bias and the six-position
+    // accelerometer fit.
+    const HealthReport health = healthCheck.run();
+    if (!health.ok())
+        Serial.println("ERROR,HEALTH_CHECK_FAILED");
+
     showBootMessage("Ready");
     telemetryOutput.begin();
     lastScreenMs = millis();
@@ -97,6 +118,8 @@ void setup()
 
 void loop()
 {
+    // The IMU sampling + estimation runs in its own task; this only copies the
+    // latest snapshot, so the loop stays responsive for display/servo/OTA work.
     ahrs.update();
     ahrs.serviceConsole();
     telemetryOutput.update(ahrs);

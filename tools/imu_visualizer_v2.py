@@ -13,10 +13,11 @@ Keys (click the window first):
     space  pause / resume the display (data keeps being recorded)
     [  ]   shorter / longer time window  (5 10 20 30 60 120 s, see Config.window_steps)
     m      cycle Y-range preset: overview -> detail -> auto
-    z      zero the top-down position (ΔX/ΔY start again from 0)
+    z      zero the top-down position (Δ east / Δ north start again from 0)
 
-Robot frame: X = right, Y = front, Z = up (right-handed). Heading dial: 0 deg = world +Y
-(the way the robot faced when yaw was 0), increasing clockwise as seen from above.
+Robot frame: X = right, Y = front, Z = up (right-handed). The firmware body frame is
+X = forward, Y = left, Z = up (FLU), so the robot's nose is body +Y.
+Heading dial: 0 deg = north, increasing clockwise as seen from above.
 Test: turn the robot LEFT by hand -> the heading must DEcrease and the icon must turn left.
 If it turns the wrong way, set Config.euler_signs = (1, 1, -1).
 
@@ -76,7 +77,7 @@ class Config:
     port: str = "auto"            # "auto", or "/dev/cu.usbmodem1101", "COM5", ...
     baud: int = 115200            # must match Serial.begin() on a UART; ignored by USB-CDC
     line_prefix: str = "IMU"      # only lines starting with "IMU," are data ("" = no prefix)
-    auto_zero_on_connect: bool = True   # ΔX/ΔY start at 0 when the first sample arrives
+    auto_zero_on_connect: bool = True   # Δ east / Δ north start at 0 on the first sample
 
     # ---- time axis ---------------------------------------------------------
     window_steps: tuple = (5, 10, 20, 30, 60, 120)   # seconds; [ and ] move along this list
@@ -112,6 +113,25 @@ class Config:
     box_size: tuple = (0.9, 1.4, 0.4)      # X, Y, Z size of the drawn box (forward = +Y, longest)
     euler_signs: tuple = (1, 1, 1)         # flip a 1 to -1 if roll / pitch / yaw rotates the wrong way
 
+    # ---- mounting / heading ------------------------------------------------
+    # The firmware world frame is X = north, Y = west, Z = up, and yaw is
+    # counter-clockwise from +X (see docs/imu/ARCHITECTURE.md §2). The firmware
+    # body frame is X = forward, Y = left, Z = up (FLU).
+    #
+    # On this robot the IMU is mounted so its axes line up with the chassis:
+    # body +X points RIGHT and body +Y points FORWARD. The firmware still calls
+    # +X "forward", so its yaw tracks the robot's right-hand side, not its nose.
+    # The nose is body +Y, and the compass heading (0 = north, clockwise) is
+    #
+    #     heading = (270 - yaw) mod 360
+    #
+    # Derivation: nose in world = R @ (0,1,0) = (-sin yaw, cos yaw, 0) in
+    # (north, west, up). east = -west = -cos yaw, north = -sin yaw, so
+    # heading = atan2(east, north) = atan2(-cos yaw, -sin yaw) = (270 - yaw) mod 360.
+    #
+    # Set heading_offset_deg = 0 if you ever remount so body +X points forward.
+    heading_offset_deg: float = 270.0      # heading = (heading_offset_deg - yaw) mod 360
+
     # ---- logging -----------------------------------------------------------
     log: bool = False                      # also record everything to logs/imu_<time>.csv
     log_dir: str = "logs"
@@ -139,6 +159,15 @@ DEFAULT_FIELDS = (
     "still_failure_mask",                  # bit i set = still-check number i is failing
     "stdA", "trust",                       # g, 0..1
     "rollG", "pitchG",                     # gyro-only shadow attitude (deg)
+    # --- appended by the PX4-based IMU stack (optional for older firmware) ---
+    "ebx", "eby", "ebz",                   # estimator integral gyro bias (deg/s)
+    "acc_norm_g",                          # |accel| in g
+    "mag_norm",                            # |mag| in µT
+    "rate_hz",                             # measured IMU sampling rate
+    "accel_rms_g",                         # accel calibration residual (g)
+    "mag_rms_ut",                          # mag calibration residual (µT)
+    "mag_fit",                             # 0 none / 1 sphere / 2 ellipsoid
+    "est_init",                            # estimator initialized flag
 )
 FAIL_BITS = 8
 DERIVED = (("speed", "a_norm", "drift_roll", "drift_pitch")      # computed here
@@ -197,11 +226,14 @@ class LineParser:
             self.colmap = make_colmap(line.lstrip("#").split(","))
             return None
         parts = line.split(",")
-        if len(parts) != len(self.colmap):                      # boot message / half line / wrong layout
-            self.last_reason = f"got {len(parts)} values, expected {len(self.colmap)}"
+        # A newer firmware may append columns and an older one may send fewer.
+        # Map by position over the columns we know and ignore the rest, so the
+        # tool keeps working across firmware revisions.
+        if len(parts) < len(self.colmap):                       # boot message / half line / wrong layout
+            self.last_reason = f"got {len(parts)} values, expected at least {len(self.colmap)}"
             return None
         try:
-            vals = [float(p) for p in parts]
+            vals = [float(p) for p in parts[:len(self.colmap)]]
         except ValueError:
             self.last_reason = "a value is not a number"
             return None
@@ -309,6 +341,17 @@ PANELS = [
           [Line(f"fb{b}", "_", "#c0392b", lw=1.6, step=True, scale=0.55, offset=j) for j, b in enumerate(_bits)],
           ylim=(-0.2, len(_bits)),
           yticks=tuple((j + 0.27, STILL_FAIL_BITS[b]) for j, b in enumerate(_bits))),
+    # Estimator integral gyro bias. Flat lines near zero = the estimator is not
+    # fighting a real bias; a slow ramp means the calibration left some behind.
+    Panel("Estimator gyro bias (deg/s)", "deg/s", (4, 0),
+          [Line("ebx", "x", X_C), Line("eby", "y", Y_C), Line("ebz", "z", Z_C)],
+          range_key="gyro"),
+    # Calibration quality + sampling health, straight from the firmware.
+    Panel("Calibration / sampling health", "", (4, 1),
+          [Line("rate_hz", "rate (Hz)", "#7b3fa0"),
+           Line("accel_rms_g", "accel rms (g)", "#e08a00"),
+           Line("mag_rms_ut", "mag rms (uT)", "#2ca02c")],
+          ylim=(0.0, 250.0)),
 ]
 
 
@@ -533,13 +576,23 @@ def rot2(pts, psi):
     return np.column_stack([pts[:, 0] * c - pts[:, 1] * s, pts[:, 0] * s + pts[:, 1] * c])
 
 
+# The firmware world frame is (north, west, up). Every plot here is drawn in a
+# compass frame (east, north, up) instead, so north is up and east is right.
+# east = -west, north = north, up = up.
+WORLD_TO_DISPLAY = np.array([[0.0, -1.0, 0.0],
+                             [1.0, 0.0, 0.0],
+                             [0.0, 0.0, 1.0]])
+
+
 def rot_matrix(roll, pitch, yaw, signs=(1, 1, 1)):
+    """Body -> display rotation. Body is FLU (X forward, Y left, Z up); display is
+    (east, north, up)."""
     r, p, y = np.radians([roll * signs[0], pitch * signs[1], yaw * signs[2]])
     cr, sr, cp, sp, cy, sy = math.cos(r), math.sin(r), math.cos(p), math.sin(p), math.cos(y), math.sin(y)
     Rz = np.array([[cy, -sy, 0], [sy, cy, 0], [0, 0, 1]])
     Ry = np.array([[cp, 0, sp], [0, 1, 0], [-sp, 0, cp]])
     Rx = np.array([[1, 0, 0], [0, cr, -sr], [0, sr, cr]])
-    return Rz @ Ry @ Rx
+    return WORLD_TO_DISPLAY @ (Rz @ Ry @ Rx)
 
 
 def box_faces(R, size):
@@ -590,8 +643,9 @@ class App:
             fig.canvas.manager.set_window_title("Crawling Bot V2 - IMU visualizer")
         except Exception:
             pass
-        gl = fig.add_gridspec(4, 2, left=0.045, right=0.625, top=0.955, bottom=0.08, hspace=0.38,
-                              wspace=0.18, height_ratios=[1, 1, 1, 0.9])
+        # 5 rows: the original 4 plus the estimator-bias / calibration-health row.
+        gl = fig.add_gridspec(5, 2, left=0.045, right=0.625, top=0.955, bottom=0.08, hspace=0.42,
+                              wspace=0.18, height_ratios=[1, 1, 1, 0.9, 0.9])
         gr = fig.add_gridspec(4, 1, left=0.675, right=0.975, top=0.955, bottom=0.08,
                               height_ratios=[1.15, 1.0, 0.85, 1.0], hspace=0.2)
         self.blit = Blitter(fig.canvas, cfg.use_blit)
@@ -628,10 +682,11 @@ class App:
 
         # ---- 3D orientation ----
         ax3 = fig.add_subplot(gr[0], projection="3d")
-        ax3.set_title("Robot 3D orientation   (teal face = front = +Y)", fontsize=9.5, fontweight="bold")
+        ax3.set_title("Robot 3D orientation   (teal face = front = body +Y)", fontsize=9.5,
+                      fontweight="bold")
         ax3.set_xlim(-1, 1); ax3.set_ylim(-1, 1); ax3.set_zlim(-1, 1)
         ax3.set_box_aspect((1, 1, 1))
-        ax3.set_xlabel("X"); ax3.set_ylabel("Y"); ax3.set_zlabel("Z")
+        ax3.set_xlabel("X (east)"); ax3.set_ylabel("Y (north)"); ax3.set_zlabel("Z (up)")
         ax3.tick_params(labelsize=6)
         ax3.view_init(elev=24, azim=-58)
         base, top, front = "#e8873a", "#f4b66f", "#2a9d8f"
@@ -654,7 +709,7 @@ class App:
             axd.plot([r0 * math.sin(t), math.sin(t)], [r0 * math.cos(t), math.cos(t)], color="0.35",
                      lw=1.5 if deg % 90 == 0 else 0.8)
             if deg % 90 == 0:                                   # cardinal points, outside the ring
-                lab = {0: "+Y", 90: "+X", 180: "−Y", 270: "−X"}[deg]
+                lab = {0: "N", 90: "E", 180: "S", 270: "W"}[deg]
                 axd.text(1.27 * math.sin(t), 1.27 * math.cos(t), f"{lab}\n{deg}°", fontsize=6.8, ha="center",
                          va="center", color="0.25", fontweight="bold", linespacing=0.95)
             elif deg % 30 == 0:
@@ -668,7 +723,7 @@ class App:
         self.d_head = axd.add_patch(Polygon(ICON_HEAD, closed=True, fc="#2a9d8f", ec="#2a9d8f", zorder=3))
         axh = fig.add_subplot(gh[1])
         axh.axis("off")
-        axh.text(0.0, 0.98, "HEADING   (0° = +Y, clockwise)", transform=axh.transAxes, va="top",
+        axh.text(0.0, 0.98, "HEADING   (0° = north, clockwise)", transform=axh.transAxes, va="top",
                  fontsize=7.5, color="0.4")
         self.t_head_big = axh.text(0.0, 0.64, "", transform=axh.transAxes, va="center", fontsize=28,
                                    fontweight="bold")
@@ -676,8 +731,10 @@ class App:
                                    family="monospace")
         self.t_head_turn = axh.text(0.0, 0.26, "", transform=axh.transAxes, va="center", fontsize=9.5,
                                     fontweight="bold")
-        axh.text(0.0, 0.10, "■ green = front (+Y)", transform=axh.transAxes, va="center", fontsize=7.5, color=Y_C)
-        axh.text(0.0, 0.00, "■ red = right side (+X)", transform=axh.transAxes, va="center", fontsize=7.5, color=X_C)
+        axh.text(0.0, 0.10, "■ green = front (body +Y)", transform=axh.transAxes, va="center",
+                 fontsize=7.5, color=Y_C)
+        axh.text(0.0, 0.00, "■ red = right side (body +X)", transform=axh.transAxes, va="center",
+                 fontsize=7.5, color=X_C)
         self.blit.add(self.d_arc, self.d_body, self.d_nose, self.d_right, self.d_needle, self.d_head,
                       self.t_head_big, self.t_head_sub, self.t_head_turn)
 
@@ -693,7 +750,7 @@ class App:
         # ---- top-down ----
         axt = self.ax_td = fig.add_subplot(gr[3])
         axt.set_title("Top-down displacement (dead reckoning, since zero)", loc="left")
-        axt.set_xlabel("ΔX (m)"); axt.set_ylabel("ΔY (m)")
+        axt.set_xlabel("Δ east (m)"); axt.set_ylabel("Δ north (m)")
         axt.grid(alpha=0.3)
         axt.set_aspect("equal", adjustable="box")
         axt.set_xlim(-0.5, 0.5); axt.set_ylim(-0.5, 0.5)
@@ -889,7 +946,11 @@ class App:
         if tw is not None and tw.shape[1] >= 1:
             k = max(1, math.ceil(tw.shape[1] / 1500))
             idx = np.unique(np.r_[np.arange(0, tw.shape[1], k), tw.shape[1] - 1])
-            tx, ty = tw[0, idx] - self.zero[0], tw[1, idx] - self.zero[1]
+            # px = world X = north, py = world Y = west. Plot a compass-style
+            # map: east on +x, north on +y.
+            dn = tw[0, idx] - self.zero[0]
+            dw = tw[1, idx] - self.zero[1]
+            tx, ty = -dw, dn
             ok = np.isfinite(tx) & np.isfinite(ty)
             if ok.any():
                 tx, ty = tx[ok], ty[ok]
@@ -897,18 +958,32 @@ class App:
                 self.td_trail.set_data(tx, ty)
                 self.td_now.set_data([tx[-1]], [ty[-1]])
                 if R is not None:
+                    # R is body -> display (east, north, up), so the robot's nose
+                    # (body +Y) is already in plot coordinates.
                     f = R @ np.array([0.0, 1.0, 0.0])
                     n = math.hypot(f[0], f[1])
                     if n > 1e-6:
                         L = 0.14 * (self.ax_td.get_xlim()[1] - self.ax_td.get_xlim()[0])
-                        self.td_head.set_data([tx[-1], tx[-1] + f[0] / n * L], [ty[-1], ty[-1] + f[1] / n * L])
+                        self.td_head.set_data([tx[-1], tx[-1] + f[0] / n * L],
+                                              [ty[-1], ty[-1] + f[1] / n * L])
 
     # ---------------------------------------------------------------- heading
+    def _heading(self, yaw_deg):
+        """Compass heading (0 = north, clockwise) from the firmware yaw.
+
+        The firmware world frame is X = north, Y = west, Z = up, and yaw is
+        counter-clockwise from +X. The robot's nose is body +Y, so
+        heading = (270 - yaw) mod 360. See Config.heading_offset_deg.
+        """
+        return (self.cfg.heading_offset_deg - yaw_deg) % 360.0
+
     def _update_heading(self, r):
         sign = self.cfg.euler_signs[2]
         yaw = r[CH["yaw"]] * sign                         # counter-clockwise positive (right-hand rule, Z up)
-        psi = math.radians(yaw)
-        heading = (-yaw) % 360.0                          # compass style: clockwise from +Y
+        heading = self._heading(yaw)
+        # The dial is drawn with 0 deg at the top and angles increasing
+        # clockwise, so the icon is rotated by -heading.
+        psi = -math.radians(heading)
         self.d_body.set_xy(rot2(ICON_BODY, psi))
         self.d_nose.set_xy(rot2(ICON_NOSE, psi))
         self.d_head.set_xy(rot2(ICON_HEAD, psi))
@@ -950,7 +1025,9 @@ class App:
             self.t_body.set_text(msg)
             return
         win = self.cfg.window_steps[self.win_i]
-        dx, dy = r[CH["px"]] - self.zero[0], r[CH["py"]] - self.zero[1]
+        dn = r[CH["px"]] - self.zero[0]
+        dw = r[CH["py"]] - self.zero[1]
+        dx, dy = -dw, dn                                   # east, north
         mask = int(r[CH["still_failure_mask"]]) if np.isfinite(r[CH["still_failure_mask"]]) else 0
         fails = ", ".join(STILL_FAIL_BITS.get(i, f"bit{i}") for i in range(FAIL_BITS) if (mask >> i) & 1) or "-"
         dt = r[CH["dt"]]
@@ -962,7 +1039,7 @@ class App:
             f"Moving: {yn(r[CH['moving']])}   Still: {yn(r[CH['still']])}   fail-mask {mask} -> {fails}\n"
             f"Roll {r[CH['roll']]:+6.1f}°  Pitch {r[CH['pitch']]:+6.1f}°  Yaw {r[CH['yaw']]:+7.1f}°  |a| {r[CH['a_norm']]:.2f}\n"
             f"Vel  x {r[CH['vx']]:+6.2f}  y {r[CH['vy']]:+6.2f}  z {r[CH['vz']]:+6.2f} m/s   |v| {r[CH['speed']]:.2f}\n"
-            f"Pos  Δx {dx:+9.3f}  Δy {dy:+9.3f} m   dist {math.hypot(dx, dy):.3f} m\n"
+            f"Pos  ΔE {dx:+9.3f}  ΔN {dy:+9.3f} m   dist {math.hypot(dx, dy):.3f} m\n"
             f"Gyro-only drift   roll {r[CH['drift_roll']]:+.1f}°   pitch {r[CH['drift_pitch']]:+.1f}°")
 
     # ------------------------------------------------------------- lifecycle

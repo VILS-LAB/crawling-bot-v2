@@ -1,39 +1,69 @@
 #ifndef AHRS_H
 #define AHRS_H
 
+// IMU / attitude stack for the crawling bot.
+//
+// Pipeline (see docs/imu/ARCHITECTURE.md for the full story):
+//
+//   MPU9250 (200 Hz)
+//     -> calibration (PX4 model: matrix/bias per sensor)
+//     -> filters (PX4 ports: median -> notch -> 2nd order Butterworth)
+//     -> attitude estimator (PX4 attitude_estimator_q port, quaternion + bias)
+//     -> gravity removal via rotateBodyToWorld()  [project rotation contract]
+//     -> still detection + ZUPT + dead-reckoning integration
+//
+// The sampling loop runs in its own FreeRTOS task pinned to IMU_TASK_CORE so
+// the estimator sees a stable dt even while the Arduino loop is busy with the
+// display, servos or OTA. update() only copies the latest snapshot.
+
 #include <Arduino.h>
 #include <Wire.h>
 #include <MPU9250.h>
-#include <Preferences.h>
-#include <Math.h>
+
 #include "ImuCalibration.h"
 #include "ImuFilters.h"
+#include "ImuAttitudeEstimator.h"
 #include "ImuRotation.h"
 
 class Display;
 
 struct ImuTelemetry
 {
-    float accel[3];       // Calibrated accelerometer, m/s^2, body frame
-    float linearAccel[3]; // Gravity-free acceleration, m/s^2, world frame
-    float filteredLinearAccel[3]; // Low-pass filtered gravity-free acceleration
-    float filteredGyro[3]; // Low-pass filtered gyro, deg/s
-    float filteredMag[3]; // Median + Butterworth + adaptive Kalman, uT
-    float gyro[3];        // Gyroscope, deg/s, body frame
-    float mag[3];         // Magnetometer, uT, body frame
-    float quaternion[4];  // w, x, y, z
-    float roll;
-    float pitch;
-    float yaw;
-    float temperature;
-    float dt;
-    float stdA;
-    float trust;
-    float rollG;
-    float pitchG;
+    // --- existing columns (order is part of the CSV contract) --------------
+    float accel[3];               // calibrated accelerometer, m/s^2, body frame
+    float linearAccel[3];         // gravity-free acceleration, m/s^2, world frame
+    float filteredLinearAccel[3]; // low-pass filtered gravity-free acceleration
+    float filteredGyro[3];        // filtered gyro, deg/s
+    float filteredMag[3];         // filtered magnetometer, uT
+    float gyro[3];                // bias-corrected gyro, deg/s, body frame
+    float mag[3];                 // calibrated magnetometer, uT, body frame
+    float quaternion[4];          // w, x, y, z  (body -> world)
+    float roll;                   // deg
+    float pitch;                  // deg
+    float yaw;                    // deg
+    float temperature;            // deg C
+    float dt;                     // s
+    float stdA;                   // accel vector std-dev over the still window, g
+    float trust;                  // 0..1, how much accel is currently fused
+    float rollG;                  // gyro-only shadow roll, deg
+    float pitchG;                 // gyro-only shadow pitch, deg
     bool still;
     uint8_t stillFailureMask;
-    float gyroBias[3];
+    float gyroBias[3];            // calibration gyro bias, deg/s
+
+    // --- appended columns (new in the PX4-based stack) ---------------------
+    float estimatorBias[3];       // estimator integral gyro bias, deg/s
+    float accelNormG;             // |accel| in g
+    float magNorm;                // |mag| in uT
+    float imuRateHz;              // measured sampling rate of the IMU task
+    float accelCalRms;            // accel calibration residual, g
+    float magCalRms;              // mag calibration residual, uT
+    uint8_t magFitKind;           // 0 none, 1 sphere, 2 ellipsoid
+    uint8_t estimatorInitialized; // 0/1
+
+    // Dead-reckoning state, published so the getters never race the IMU task.
+    float velocity[3];
+    float position[3];
 };
 
 class AHRS
@@ -41,124 +71,213 @@ class AHRS
 public:
     explicit AHRS(Display *display = nullptr);
     ~AHRS();
+
     bool begin(uint8_t robotNumber = 1);
+
+    // Start / stop the dedicated sampling task (core IMU_TASK_CORE).
+    bool startTask();
+    void stopTask();
+
     void setDisplay(Display *display) { statusDisplay = display; }
+
+    // Copy the latest snapshot produced by the sampling task. Cheap and
+    // non-blocking; safe to call from the Arduino loop.
     void update();
+
     bool calibrate();
     void serviceConsole();
     bool isSerialTelemetryEnabled() const { return serialTelemetryEnabled; }
 
     // Motion detection
-    bool isMoving();
+    bool isMoving() { return !telemetry.still; }
     void resetPosition();
 
     // Position (m)
-    float getPositionX() { return position[0]; }
-    float getPositionY() { return position[1]; }
-    float getPositionZ() { return position[2]; }
+    float getPositionX() { return telemetry.position[0]; }
+    float getPositionY() { return telemetry.position[1]; }
+    float getPositionZ() { return telemetry.position[2]; }
 
     // Velocity (m/s)
-    float getVelocityX() { return velocity[0]; }
-    float getVelocityY() { return velocity[1]; }
-    float getVelocityZ() { return velocity[2]; }
-    float getSpeed() { return sqrt(velocity[0] * velocity[0] + velocity[1] * velocity[1] + velocity[2] * velocity[2]); }
+    float getVelocityX() { return telemetry.velocity[0]; }
+    float getVelocityY() { return telemetry.velocity[1]; }
+    float getVelocityZ() { return telemetry.velocity[2]; }
+    float getSpeed()
+    {
+        return sqrtf(telemetry.velocity[0] * telemetry.velocity[0] +
+                     telemetry.velocity[1] * telemetry.velocity[1] +
+                     telemetry.velocity[2] * telemetry.velocity[2]);
+    }
 
-    // Linear acceleration (m/s^2) - gravity removed
-    float getLinearAccelX() { return linearAccel[0]; }
-    float getLinearAccelY() { return linearAccel[1]; }
-    float getLinearAccelZ() { return linearAccel[2]; }
+    // Linear acceleration (m/s^2), gravity removed
+    float getLinearAccelX() { return telemetry.linearAccel[0]; }
+    float getLinearAccelY() { return telemetry.linearAccel[1]; }
+    float getLinearAccelZ() { return telemetry.linearAccel[2]; }
+
     const ImuTelemetry &getTelemetry() const { return telemetry; }
 
-    // Orientation (Euler angles)
-    float getRoll() { return initialized ? mpu->getRoll() : 0; }
-    float getPitch() { return initialized ? mpu->getPitch() : 0; }
-    float getYaw() { return initialized ? mpu->getYaw() : 0; }
+    // Orientation (Euler angles, deg, project convention)
+    float getRoll() { return telemetry.roll; }
+    float getPitch() { return telemetry.pitch; }
+    float getYaw() { return telemetry.yaw; }
 
-    // Accelerometer data (g)
-    float getAccelX() { return initialized ? mpu->getAccX() * G_CONST : 0; }
-    float getAccelY() { return initialized ? mpu->getAccY() * G_CONST : 0; }
-    float getAccelZ() { return initialized ? mpu->getAccZ() * G_CONST : 0; }
+    // Accelerometer data (m/s^2)
+    float getAccelX() { return telemetry.accel[0]; }
+    float getAccelY() { return telemetry.accel[1]; }
+    float getAccelZ() { return telemetry.accel[2]; }
 
     // Gyroscope data (deg/s)
-    float getGyroX() { return initialized ? mpu->getGyroX() : 0; }
-    float getGyroY() { return initialized ? mpu->getGyroY() : 0; }
-    float getGyroZ() { return initialized ? mpu->getGyroZ() : 0; }
+    float getGyroX() { return telemetry.gyro[0]; }
+    float getGyroY() { return telemetry.gyro[1]; }
+    float getGyroZ() { return telemetry.gyro[2]; }
 
     // Magnetometer data (uT)
-    float getMagX() { return initialized ? mpu->getMagX() : 0; }
-    float getMagY() { return initialized ? mpu->getMagY() : 0; }
-    float getMagZ() { return initialized ? mpu->getMagZ() : 0; }
+    float getMagX() { return telemetry.mag[0]; }
+    float getMagY() { return telemetry.mag[1]; }
+    float getMagZ() { return telemetry.mag[2]; }
 
-    // Quaternion
-    float getQuatW() { return initialized ? mpu->getQuaternionW() : 1; }
-    float getQuatX() { return initialized ? mpu->getQuaternionX() : 0; }
-    float getQuatY() { return initialized ? mpu->getQuaternionY() : 0; }
-    float getQuatZ() { return initialized ? mpu->getQuaternionZ() : 0; }
+    // Quaternion (body -> world)
+    float getQuatW() { return telemetry.quaternion[0]; }
+    float getQuatX() { return telemetry.quaternion[1]; }
+    float getQuatY() { return telemetry.quaternion[2]; }
+    float getQuatZ() { return telemetry.quaternion[3]; }
 
-    // Temperature (Celsius)
-    float getTemperature() { return initialized ? mpu->getTemperature() : 0; }
+    float getTemperature() { return telemetry.temperature; }
+
+    // Diagnostics
+    const imu::ImuCalibrationData &getCalibration() const { return calibration; }
+    bool isCalibrationLoaded() const { return calibrationLoaded; }
 
 private:
-    void updateTelemetry(float dt);
-    bool calibrateAccelerometerCloud();
+    // --- sampling task -----------------------------------------------------
+    static void taskEntry(void *argument);
+    void taskLoop();
+    void processSample(float dt);
+
+    // --- pipeline stages ---------------------------------------------------
+    void readAndCalibrate();
+    void runFilters();
+    void runEstimator(float dt);
+    void updateStillDetection(float dt);
+    void updateDeadReckoning(float dt);
+    void publishSnapshot(float dt);
+
+    // --- calibration -------------------------------------------------------
+    bool runCalibration(bool gyro, bool accelerometer, bool magnetometer);
     bool calibrateGyroscope();
+    bool calibrateAccelerometer();
     bool calibrateMagnetometer();
     bool checkCalibrationAtBoot();
-    bool runCalibration(bool gyro, bool accelerometer, bool magnetometer);
-    void printCalibrationMenu() const;
-    void printCalibrationStatus() const;
-    bool consumeCalibrationControl();
     bool saveCalibration();
     void clearStoredCalibration();
     bool loadCalibration();
+    void printCalibrationMenu() const;
+    void printCalibrationStatus() const;
+    bool consumeCalibrationControl();
     void showCalibrationScreen(const char *title, const char *line1 = nullptr,
                                const char *line2 = nullptr);
-    void correctAccelerometer(const float input[3], float output[3]) const;
-    void filterTelemetry();
-    MPU9250 *mpu;
-    bool initialized;
-    bool isStatic;
-    unsigned long stationaryStartTime;
-    unsigned long biasStillStartTime;
-    unsigned long lastUpdateTime;
 
-    float velocity[3];    // m/s
-    float position[3];    // m
-    float linearAccel[3]; // m/s^2 (gravity removed)
-    float gravityReference; // Estimated world-frame gravity magnitude
-    ImuCalibrationData calibration{};
-    uint8_t robotNumber;
-    Preferences preferences;
-    bool calibrationLoaded;
-    bool serialTelemetryEnabled;
-    uint8_t deadbandMode;
-    bool planarMode;
-    float initialGyroBias[3] = {};
-    ImuFilterPipeline accelFilter;
-    MedianFilter5 gyroMedianFilter;
-    ImuFilterPipeline gyroFilter;
-    ImuFilterPipeline magFilter;
-    ComplementaryAttitude attitude;
-    float shadowRoll = 0;
-    float shadowPitch = 0;
-    bool shadowInitialized = false;
+    // --- state -------------------------------------------------------------
+    MPU9250 *mpu = nullptr;
+    bool initialized = false;
+    bool calibrationLoaded = false;
+    uint8_t robotNumber = 1;
+    Display *statusDisplay = nullptr;
+    bool serialTelemetryEnabled = true;
+
+    imu::ImuCalibrationData calibration{};
+
+    // Raw + calibrated sample of the current iteration.
+    float rawAccelG[3] = {};   // g
+    float rawGyroDps[3] = {};  // deg/s
+    float rawMagUt[3] = {};    // uT
+    float accelMs2[3] = {};    // m/s^2, calibrated
+    float gyroDps[3] = {};     // deg/s, bias corrected
+    float initialGyroBias[3] = {}; // bias as calibrated, the runtime tracker's anchor
+    float magUt[3] = {};       // uT, calibrated
+
+    // Filters
+    imu::GyroFilterPipeline gyroFilter;
+    imu::AccelFilterPipeline accelFilter;
+    imu::MagFilterPipeline magFilter;
+    imu::Vec3 filteredGyroDps{};
+    imu::Vec3 filteredAccelMs2{};
+    imu::Vec3 filteredMagUt{};
+    imu::LowPassFilter2pVec3 linearAccelFilter;
+    float filteredLinearAccel[3] = {};
+
+    // Estimator
+    imu::AttitudeEstimator estimator;
+    bool estimatorSeeded = false;
+
+    // Still detection (unchanged semantics, the visualizers depend on it)
+    bool isStatic = true;
+    unsigned long stationaryStartTime = 0;
+    unsigned long biasStillStartTime = 0;
     unsigned long lastStillTime = 0;
-    ImuTelemetry telemetry{};
-    Display *statusDisplay;
+    float accelHistory[40][3] = {};
+    uint16_t accelHistoryIndex = 0;
+    uint16_t accelHistoryCount = 0;
+    float accelHistorySum[3] = {};
+    float accelHistorySumSquares[3] = {};
+
+    // Dead reckoning
+    float velocity[3] = {};
+    float position[3] = {};
+    float linearAccel[3] = {};
+    float gravityReference = imu::kGravity;
+
+    // Gyro-only shadow attitude (drift diagnostic)
+    float shadowRoll = 0.0f;
+    float shadowPitch = 0.0f;
+    bool shadowInitialized = false;
+
+    // Trust smoothing
+    float trust = 0.0f;
+
+    // Timing
+    unsigned long lastSampleUs = 0;
+    float measuredRateHz = 0.0f;
+
+    // Task plumbing. `taskHandle` is only ever written by the creator
+    // (startTask/stopTask); the task signals its own exit through taskExited so
+    // the two never race on the handle.
+    TaskHandle_t taskHandle = nullptr;
+    volatile bool taskRunning = false;
+    volatile bool taskPaused = false;
+    volatile bool taskPauseAck = false;  // task has observed taskPaused
+    volatile bool taskExited = false;
+    portMUX_TYPE snapshotMux = portMUX_INITIALIZER_UNLOCKED;
+    ImuTelemetry telemetry{};          // read by the Arduino loop
+    ImuTelemetry pendingTelemetry{};   // written by the IMU task, guarded by snapshotMux
+    volatile bool snapshotReady = false;
+
+    // Still-detection results for the current sample. Task-local: only the IMU
+    // task touches these, so they need no locking.
+    struct StillState
+    {
+        float stdA = 0.0f;
+        uint8_t failureMask = 0;
+        bool still = true;
+        float trust = 0.0f;
+        float accelNormG = 1.0f;
+    } stillState;
 
     // Constants
-    static constexpr float G_CONST = 9.80665f;                // m/s^2
-    static constexpr unsigned long STATIONARY_TIME_MS = 200; // ms - time to confirm stationary
+    static constexpr float G_CONST = imu::kGravity;
+    static constexpr unsigned long STATIONARY_TIME_MS = 200;
     static constexpr unsigned long ACCEL_TRUST_TRANSITION_MS = 100;
     static constexpr unsigned long ACCEL_TRUST_FALLBACK_MS = 5000;
     static constexpr uint16_t STILL_ACCEL_WINDOW_SAMPLES = 40;
     static constexpr bool PLANAR_MODE = true;
 
-    float accelHistory[STILL_ACCEL_WINDOW_SAMPLES][3] = {};
-    uint16_t accelNormHistoryIndex = 0;
-    uint16_t accelNormHistoryCount = 0;
-    float accelHistorySum[3] = {};
-    float accelHistorySumSquares[3] = {};
+    // Filter tuning (PX4 defaults where they exist)
+    static constexpr float FILTER_ACCEL_CUTOFF_HZ = 30.0f;  // PX4 IMU_ACCEL_CUTOFF
+    static constexpr float FILTER_GYRO_CUTOFF_HZ = 40.0f;   // PX4 IMU_GYRO_CUTOFF
+    static constexpr float FILTER_GYRO_NOTCH_HZ = 0.0f;     // 0 disables the notch
+    static constexpr float FILTER_GYRO_NOTCH_BW_HZ = 20.0f; // PX4 IMU_GYRO_NF1_BW
+    static constexpr float FILTER_MAG_CUTOFF_HZ = 5.0f;
+    static constexpr float FILTER_LINEAR_ACCEL_CUTOFF_HZ = 7.5f;
+    static constexpr float NOMINAL_SAMPLE_HZ = 200.0f;
 };
 
 #endif // AHRS_H
