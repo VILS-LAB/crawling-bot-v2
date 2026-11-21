@@ -125,14 +125,23 @@ float HealthCheck::sweep(bool down, int fromAngle, int toAngle)
 
     while (true)
     {
+        // Non-blocking target + update(): the profile ramps between steps and
+        // the gyro is sampled while the leg is actually moving, which is what
+        // the motion check is looking for.
         if (down)
-            servoControl->moveDown(angle);
+            servoControl->moveDownTo(angle);
         else
-            servoControl->moveUp(angle);
+            servoControl->moveUpTo(angle);
 
-        const float magnitude = gyroMagnitude();
-        if (magnitude > peak)
-            peak = magnitude;
+        const uint32_t stepStart = millis();
+        while (millis() - stepStart < SERVO_HEALTH_SWEEP_STEP_DELAY_MS)
+        {
+            servoControl->update();
+            const float magnitude = gyroMagnitude();
+            if (magnitude > peak)
+                peak = magnitude;
+            delay(2);
+        }
 
         if (angle == toAngle)
             break;
@@ -140,8 +149,10 @@ float HealthCheck::sweep(bool down, int fromAngle, int toAngle)
         angle += step;
         if ((step > 0 && angle > toAngle) || (step < 0 && angle < toAngle))
             angle = toAngle;
-        delay(SERVO_HEALTH_SWEEP_STEP_DELAY_MS);
     }
+
+    // Let the profile settle on the final angle before returning.
+    servoControl->waitUntilIdle();
 
     return peak;
 }

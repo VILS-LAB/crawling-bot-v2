@@ -25,5 +25,13 @@ echo "compiling host tests..."
     "$root/lib/IMU/ImuRotation.cpp" \
     -o "$build/test_imu_math"
 
+# shellcheck disable=SC2086
+"$CXX" $CXXFLAGS \
+    -I"$root/lib/ServoControl" \
+    "$here/test_servo_motion.cpp" \
+    "$root/lib/ServoControl/ServoMotion.cpp" \
+    -o "$build/test_servo_motion"
+
 echo "running..."
 "$build/test_imu_math"
+"$build/test_servo_motion"

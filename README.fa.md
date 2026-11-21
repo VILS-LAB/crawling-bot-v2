@@ -107,6 +107,7 @@
 | 🔧 [BUILD.fa.md](docs/BUILD.fa.md)                     | راهنمای دقیق ساخت و استقرار                 |
 | 💻 [EXAMPLES.fa.md](docs/EXAMPLES.fa.md)               | نمونه کدها و قطعات RL                       |
 | 📊 [PROJECT_SUMMARY.fa.md](docs/PROJECT_SUMMARY.fa.md) | مستندات کامل فنی                            |
+| 🦿 [SERVO_SAFETY.fa.md](docs/SERVO_SAFETY.fa.md)       | **حرکت رمپ‌دار سروو، محدوده نرم، API ایمن** |
 | 📈 [IMU_DEBUGGING.fa.md](docs/IMU_DEBUGGING.fa.md)     | نمودار زنده، نمایش سه‌بعدی و تست IMU        |
 | 🔄 [MIGRATION.fa.md](docs/MIGRATION.fa.md)             | یادداشت‌های مهاجرت از Arduino به PlatformIO |
 

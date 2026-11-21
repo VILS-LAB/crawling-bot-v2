@@ -2,8 +2,8 @@
 #define CONFIG_H
 
 // Pin Configuration
-#define SERVO_PIN_DOWN 32
-#define SERVO_PIN_UP 33
+#define SERVO_PIN_DOWN 7
+#define SERVO_PIN_UP 6
 
 // I2C Configuration (using default ESP32 pins)
 // SDA - GPIO 21 (default)
@@ -23,6 +23,34 @@
 #define AP_PASSWORD "12345678"
 #define SERIAL_BAUD_RATE 115200
 #define ENABLE_SERVOS 1
+
+// Servo motion safety.
+//
+// Every move is ramped (trapezoidal profile) instead of jumping to the target,
+// so a student's policy cannot slam the legs into the ground or strip a gear by
+// commanding a large step. Tune these once on the real mechanics:
+//
+//   SERVO_MAX_SPEED_DPS  cruise speed, degrees per second
+//   SERVO_ACCEL_DPS2     acceleration, degrees per second squared
+//
+// A full 180 degree move at these defaults takes about 1.3 s. Lower the speed
+// if the legs still hit the ground, raise it if the robot feels sluggish.
+#define SERVO_MAX_SPEED_DPS 180.0f
+#define SERVO_ACCEL_DPS2 600.0f
+
+// Soft limits, in degrees. The driver clamps every target and every profile
+// step to these, so a bad angle from a policy is ignored instead of driving the
+// leg past the mechanical stop. Narrow them to the real safe range of the
+// assembled robot.
+#define SERVO_DOWN_MIN_ANGLE 0
+#define SERVO_DOWN_MAX_ANGLE 180
+#define SERVO_UP_MIN_ANGLE 0
+#define SERVO_UP_MAX_ANGLE 180
+
+// Longest time step the motion profile will integrate in one update(). If the
+// loop stalls (OTA, display, a student's delay()), the profile advances by at
+// most this much instead of jumping, so the servo keeps a sane speed.
+#define SERVO_UPDATE_MAX_DT_MS 50
 
 // Servo health check.
 //

@@ -137,32 +137,46 @@ void setup() {
 
 ## Servo Control Examples
 
+> **Safety first.** Every move is ramped: the driver accelerates, cruises and
+> decelerates into the target, and it remembers where each leg is. You cannot
+> slam a leg into the ground by commanding a big step, and you do not need to
+> add `delay()` between moves. See [SERVO_SAFETY.md](SERVO_SAFETY.md).
+
 ### Basic Movement
 ```cpp
 #include <ServoControl.h>
 
-ServoControl servos(32, 33);  // pins 32 and 33
+ServoControl servos(SERVO_PIN_DOWN, SERVO_PIN_UP);
 
 void setup() {
     servos.begin();
-    servos.moveDown(90);
-    delay(1000);
+    servos.moveDown(90);   // ramped, blocks until the leg arrives
     servos.moveUp(90);
+}
+```
+
+### Non-blocking Movement (recommended in `loop()`)
+```cpp
+void loop() {
+    servos.update();          // must run every loop
+
+    if (someCondition) {
+        servos.moveDownTo(120);   // just sets a target, returns immediately
+        servos.moveUpTo(60);
+    }
+
+    if (servos.isMoving()) {
+        // still travelling
+    }
 }
 ```
 
 ### Smooth Movement
 ```cpp
 void crawlForward() {
-    // Move down servo from 0 to 90 smoothly
-    servos.moveDownSmooth(90, 10);  // 10ms delay between steps
-    delay(500);
-    
-    // Move up servo
-    servos.moveUpSmooth(90, 10);
-    delay(500);
-    
-    // Return to initial position
+    // Blocks until the leg arrives; the ramp is handled for you.
+    servos.moveDownSmooth(90);
+    servos.moveUpSmooth(90);
     servos.setInitialPosition();
 }
 ```
@@ -172,10 +186,12 @@ void crawlForward() {
 void loop() {
     Serial.print("Down servo: ");
     Serial.print(servos.getCurrentDownAngle());
+    Serial.print("°, target: ");
+    Serial.print(servos.getDownTarget());
     Serial.print("°, Up servo: ");
     Serial.print(servos.getCurrentUpAngle());
     Serial.println("°");
-    
+
     delay(1000);
 }
 ```
@@ -184,24 +200,43 @@ void loop() {
 ```cpp
 void crawlCycle() {
     // Lift front
-    servos.moveUpSmooth(45, 10);
-    delay(200);
-    
+    servos.moveUpSmooth(45);
+
     // Push back
-    servos.moveDownSmooth(135, 10);
-    delay(200);
-    
+    servos.moveDownSmooth(135);
+
     // Lower front
-    servos.moveUpSmooth(90, 10);
-    delay(200);
-    
+    servos.moveUpSmooth(90);
+
     // Pull forward
-    servos.moveDownSmooth(45, 10);
-    delay(200);
-    
+    servos.moveDownSmooth(45);
+
     // Reset
     servos.setInitialPosition();
-    delay(500);
+}
+```
+
+### Tuning Speed and Limits
+```cpp
+void setup() {
+    servos.begin();
+
+    // Slow the legs down and keep them away from the mechanical stops.
+    servos.setSpeed(90.0f);    // degrees per second
+    servos.setAccel(300.0f);   // degrees per second squared
+    servos.setDownLimits(20, 160);
+    servos.setUpLimits(20, 160);
+}
+```
+
+### Emergency Stop
+```cpp
+void loop() {
+    servos.update();
+
+    if (emergencyStopRequested) {
+        servos.stop();   // freeze both legs where they are
+    }
 }
 ```
 

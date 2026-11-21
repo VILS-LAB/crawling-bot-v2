@@ -1,4 +1,4 @@
-# Host-side IMU tests
+# Host-side tests
 
 Compiles the **real** firmware math sources with the system C++ compiler and
 runs them on the desktop. No hardware, no Arduino, no PlatformIO — about one
@@ -20,6 +20,7 @@ test/host/run.sh
 | accelerometer calibration | six-position solve recovers a known bias + matrix, degenerate face pair rejected |
 | magnetometer calibration | LM sphere fit recovers a known offset + radius, ellipsoid refinement is not worse |
 | end-to-end tracking | yaw tracked against a synthetic ground truth |
+| servo motion profile | lands exactly on target, respects speed/accel limits, no overshoot, continuous retarget, soft limits, degenerate dt/config |
 
 ## Why this exists
 
@@ -36,6 +37,7 @@ lib/IMU/ImuFilters.cpp
 lib/IMU/ImuAttitudeEstimator.cpp
 lib/IMU/ImuCalibration.cpp
 lib/IMU/ImuRotation.cpp
+lib/ServoControl/ServoMotion.cpp
 ```
 
 `ImuCalibration.cpp` guards its `Preferences` persistence behind

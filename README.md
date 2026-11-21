@@ -66,7 +66,7 @@ A hands-on robotics platform where AI students apply **Reinforcement Learning** 
 **Actuators** (for actions):
 
 - 2 servo motors for leg control
-- Configurable speed and smooth movement
+- Ramped, speed-limited movement with soft limits (see [SERVO_SAFETY.md](docs/SERVO_SAFETY.md))
 
 **Your Code Goes Here:** `lib/Training/Training.cpp` - Ready-to-fill template for your RL implementation!
 
@@ -120,7 +120,8 @@ A hands-on robotics platform where AI students apply **Reinforcement Learning** 
 | 🔧 [BUILD.md](docs/BUILD.md)                     | Detailed build & deployment           |
 | 💻 [EXAMPLES.md](docs/EXAMPLES.md)               | RL code examples & snippets           |
 | 📊 [PROJECT_SUMMARY.md](docs/PROJECT_SUMMARY.md) | Full technical documentation          |
-| 🦿 [SERVO_HEALTH.md](docs/SERVO_HEALTH.md)       | Servo attach, health-check codes, boot order |
+| 🦿 [SERVO_SAFETY.md](docs/SERVO_SAFETY.md)       | **Ramped servo moves, soft limits, safe API** |
+| 🩺 [SERVO_HEALTH.md](docs/SERVO_HEALTH.md)       | Servo attach, health-check codes, boot order |
 | 🧭 [docs/imu/](docs/imu/README.md)               | **IMU/AHRS architecture, calibration, PX4 port map** |
 | 🕓 [IMPLEMENTATION_HISTORY.md](docs/imu/IMPLEMENTATION_HISTORY.md) | **IMU: current vs previous vs original `main`, and why each rewrite happened** |
 | 📈 [IMU_DEBUGGING.fa.md](docs/IMU_DEBUGGING.fa.md) | Live plots, 3D view, and IMU tests     |

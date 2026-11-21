@@ -67,9 +67,13 @@ crawling-bot-v2/
 
 ### 3. ServoControl Library
 - Control 2 servo motors
-- Instant and smooth movement
-- Position tracking
+- **Every move is ramped** (trapezoidal profile): no instant jumps, no overshoot
+- **Soft limits** clamp every target and every profile step
+- **Position tracking**: a new target always starts from the real position
+- Non-blocking `moveDownTo()` / `moveUpTo()` + `update()`, or blocking helpers
+- Runtime tuning: `setSpeed()`, `setAccel()`, `setDownLimits()`, `setUpLimits()`
 - Preset positions (initial, test)
+- See [SERVO_SAFETY.md](SERVO_SAFETY.md)
 
 ### 4. Network Library
 - WiFi Access Point setup

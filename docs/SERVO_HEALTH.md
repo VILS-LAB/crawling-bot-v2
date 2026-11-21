@@ -5,6 +5,10 @@ health check in `lib/HealthCheck` returns a **numeric code per servo** over the
 serial console, so a host tool or a student script can parse the result without
 reading the OLED.
 
+> This page covers the boot self-test. For how normal moves are made safe
+> (ramping, soft limits, the non-blocking API), see
+> [SERVO_SAFETY.md](SERVO_SAFETY.md).
+
 ## Order of operations at boot
 
 ```
