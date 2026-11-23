@@ -65,6 +65,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.colors import to_rgba
 from matplotlib.patches import Circle, Polygon
+from matplotlib.widgets import Slider, Button
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
 
@@ -137,6 +138,10 @@ class Config:
     log_dir: str = "logs"
 
     figsize: tuple = (16, 9)
+    # ---- arm control -------------------------------------------------------
+    tx_eol: str = "\n"                 # line ending after each command; use "\r\n" if your firmware needs it
+    send_hz: int = 20                  # max slider commands per second while dragging
+    park_angles: tuple | None = (170,170)   # (down, up) of the 'p' pose so sliders can follow it; None = leave sliders alone
 
 
 # =============================================================================
@@ -359,12 +364,28 @@ PANELS = [
 # 4. DATA SOURCES  (all run in a background thread and push parsed rows into a queue)
 # =============================================================================
 class Source(threading.Thread):
+    accepts_commands = False           # only SerialSource sets this True
+
     def __init__(self, q, parser, cfg):
         super().__init__(daemon=True)
         self.q, self.parser, self.cfg = q, parser, cfg
         self.stop_evt = threading.Event()
         self.state = "starting"
         self.rejected, self.last_reject = 0, ""
+        self.out_q = queue.SimpleQueue()       # commands going TO the robot
+        self.last_tx = ""
+
+    def send(self, cmd):
+        self.last_tx = cmd
+        if self.accepts_commands:
+            self.out_q.put((cmd + self.cfg.tx_eol).encode("ascii", "ignore"))
+
+    def flush_out(self):
+        try:
+            while True:
+                self.out_q.get_nowait()
+        except queue.Empty:
+            pass
 
     def stop(self):
         self.stop_evt.set()
@@ -389,6 +410,7 @@ def find_port():
 
 
 class SerialSource(Source):
+    accepts_commands = True
     def run(self):
         try:
             import serial
@@ -404,8 +426,14 @@ class SerialSource(Source):
             try:
                 with serial.Serial(port, self.cfg.baud, timeout=0.05) as ser:
                     self.state = f"serial {port} @ {self.cfg.baud}"
+                    self.flush_out()               # NEW: drop commands queued while disconnected
                     buf = b""
                     while not self.stop_evt.is_set():
+                        try:                       # NEW: send pending commands
+                            while True:
+                                ser.write(self.out_q.get_nowait())
+                        except queue.Empty:
+                            pass
                         chunk = ser.read(max(1, ser.in_waiting))     # grab everything that is waiting
                         if not chunk:
                             continue
@@ -632,6 +660,8 @@ class App:
         self._trail = None
         self.need_full = False
         self.last_slow = 0.0
+        self._pending = {"d": False, "u": False}
+        self._last_tx_t = 0.0
         self._build_figure()
 
     # ------------------------------------------------------------------ figure
@@ -644,9 +674,9 @@ class App:
         except Exception:
             pass
         # 5 rows: the original 4 plus the estimator-bias / calibration-health row.
-        gl = fig.add_gridspec(5, 2, left=0.045, right=0.625, top=0.955, bottom=0.08, hspace=0.42,
+        gl = fig.add_gridspec(5, 2, left=0.045, right=0.625, top=0.955, bottom=0.18, hspace=0.42,
                               wspace=0.18, height_ratios=[1, 1, 1, 0.9, 0.9])
-        gr = fig.add_gridspec(4, 1, left=0.675, right=0.975, top=0.955, bottom=0.08,
+        gr = fig.add_gridspec(4, 1, left=0.675, right=0.975, top=0.955, bottom=0.18,
                               height_ratios=[1.15, 1.0, 0.85, 1.0], hspace=0.2)
         self.blit = Blitter(fig.canvas, cfg.use_blit)
         last_row = max(p.pos[0] + 0 for p in PANELS)
@@ -764,6 +794,7 @@ class App:
         fig.text(0.045, 0.012, "space = pause     [ ] = time window     m = Y-range preset     "
                  "z = zero position     |     toolbar: zoom / pan / save", fontsize=8, color="0.4")
 
+        self._build_controls()
         fig.canvas.mpl_connect("key_press_event", self._on_key)
         fig.canvas.mpl_connect("close_event", lambda _e: self.shutdown())
         self._apply_ranges()
@@ -802,6 +833,57 @@ class App:
         elif ev.key == "z" and self.last_row is not None:
             self.zero = np.array([self.last_row[CH["px"]], self.last_row[CH["py"]]])
             self.zero_t = self.last_row[CH["t"]]
+    
+    # ------------------------------------------------------------ arm controls
+    def _build_controls(self):
+        fig, cfg = self.fig, self.cfg
+        self.s_down = Slider(fig.add_axes([0.10, 0.085, 0.20, 0.022]), "down leg", 0, 180,
+                             valinit=90, valstep=1, valfmt="%d°", color=Y_C)
+        self.s_up = Slider(fig.add_axes([0.10, 0.050, 0.20, 0.022]), "up leg", 0, 180,
+                           valinit=90, valstep=1, valfmt="%d°", color=Z_C)
+        self.s_down.on_changed(lambda _v: self._mark("d"))
+        self.s_up.on_changed(lambda _v: self._mark("u"))
+
+        def button(x, label, cmd, color, sync=None):
+            b = Button(fig.add_axes([x, 0.062, 0.065, 0.04]), label, color=color, hovercolor="0.85")
+            b.on_clicked(lambda _e: self._send_now(cmd, sync))
+            return b
+
+        self.buttons = [button(0.37, "park", "p", "0.92", cfg.park_angles),     # keep references,
+                        button(0.44, "test 90/90", "t", "0.92", (90, 90)),      # or the widgets
+                        button(0.51, "STOP", "s", "#f4a6a0")]                   # stop responding
+        self.t_tx = fig.text(0.37, 0.035, "", fontsize=8, family="monospace", color="0.3")
+        self.blit.add(self.t_tx)
+
+    def _mark(self, which):
+        self._pending[which] = True
+
+    def _set_sliders(self, d, u):
+        for s, v in ((self.s_down, d), (self.s_up, u)):
+            s.eventson = False                 # move the handle without sending a command
+            s.set_val(v)
+            s.eventson = True
+
+    def _send_now(self, cmd, sync=None):
+        self._pending = {"d": False, "u": False}      # a button overrides pending slider moves
+        self.source.send(cmd)
+        self._last_tx_t = time.monotonic()
+        if sync:
+            self._set_sliders(*sync)
+
+    def _send_pending(self, now):
+        if not any(self._pending.values()) or now - self._last_tx_t < 1.0 / self.cfg.send_hz:
+            return
+        d, u = int(self.s_down.val), int(self.s_up.val)
+        if self._pending["d"] and self._pending["u"]:
+            cmd = f"b {d} {u}"
+        elif self._pending["d"]:
+            cmd = f"d {d}"
+        else:
+            cmd = f"u {u}"
+        self._pending = {"d": False, "u": False}
+        self.source.send(cmd)
+        self._last_tx_t = now
 
     # ------------------------------------------------------------ main loop
     def _drain(self):
@@ -831,6 +913,7 @@ class App:
     def tick(self):
         now = time.monotonic()
         self._drain()
+        self._send_pending(now)
         if not self.paused:
             self._refresh_plots()
         if now - self.last_slow > 0.5:
@@ -1016,6 +1099,9 @@ class App:
             badge, color = f"● {self.mode}", "#2ca02c" if self.mode == "LIVE" else "#d98200"
         self.t_badge.set_text(f"{badge}   {self.source.state[:38]}")
         self.t_badge.set_color(color)
+        tx = self.source.last_tx
+        self.t_tx.set_text(f"last command: {tx or '-'}"
+                           + ("" if self.source.accepts_commands else "   (not sent: demo/replay)"))
         r = self.last_row
         if r is None:
             msg = "waiting for data ..."
