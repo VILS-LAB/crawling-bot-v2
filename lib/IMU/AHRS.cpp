@@ -793,6 +793,7 @@ bool AHRS::calibrateAccelerometer()
         uint16_t count = 0;
         double sum[3] = {};
         uint32_t lastAcceptedAt = 0;
+        uint32_t lastDiagnosticAt = 0;
         const uint32_t phaseStarted = millis();
 
         while (count < CAL_FACE_SAMPLES && millis() - phaseStarted < CAL_FACE_TIMEOUT_MS)
@@ -813,9 +814,13 @@ bool AHRS::calibrateAccelerometer()
             const float sample[3] = {mpu->getAccX(), mpu->getAccY(), mpu->getAccZ()};
             const float norm = sqrtf(sample[0] * sample[0] + sample[1] * sample[1] +
                                      sample[2] * sample[2]);
-            const float gyroNorm = sqrtf(mpu->getGyroX() * mpu->getGyroX() +
-                                         mpu->getGyroY() * mpu->getGyroY() +
-                                         mpu->getGyroZ() * mpu->getGyroZ());
+            const float correctedGyro[3] = {
+                mpu->getGyroX() - calibration.gyroBias[0],
+                mpu->getGyroY() - calibration.gyroBias[1],
+                mpu->getGyroZ() - calibration.gyroBias[2]};
+            const float gyroNorm = sqrtf(correctedGyro[0] * correctedGyro[0] +
+                                         correctedGyro[1] * correctedGyro[1] +
+                                         correctedGyro[2] * correctedGyro[2]);
 
             uint8_t dominantAxis = 0;
             if (fabsf(sample[1]) > fabsf(sample[dominantAxis]))
@@ -828,6 +833,32 @@ bool AHRS::calibrateAccelerometer()
             if (norm < 0.85f || norm > 1.15f || gyroNorm > 3.0f || dominantAxis != axis ||
                 fabsf(sample[axis]) < 0.75f || !expectedSide)
             {
+                if (count == 0 && millis() - lastDiagnosticAt >= 1000)
+                {
+                    Serial.print("CAL,accelerometer,waiting,acc_norm_g=");
+                    Serial.print(norm, 4);
+                    Serial.print(",gyro_norm_dps=");
+                    Serial.print(gyroNorm, 4);
+                    Serial.print(",dominant=");
+                    Serial.print("XYZ"[dominantAxis]);
+                    Serial.print(sample[dominantAxis] >= 0.0f ? '+' : '-');
+                    Serial.print(",expected=");
+                    Serial.print(imu::accelSideName(side));
+                    Serial.print(",rejection=");
+                    if (norm < 0.85f)
+                        Serial.println("accel_norm_low");
+                    else if (norm > 1.15f)
+                        Serial.println("accel_norm_high");
+                    else if (gyroNorm > 3.0f)
+                        Serial.println("motion");
+                    else if (dominantAxis != axis)
+                        Serial.println("dominant_axis");
+                    else if (fabsf(sample[axis]) < 0.75f)
+                        Serial.println("axis_magnitude");
+                    else
+                        Serial.println("axis_sign");
+                    lastDiagnosticAt = millis();
+                }
                 if (count == 0 && millis() - phaseStarted > 1200)
                 {
                     char current[24];
