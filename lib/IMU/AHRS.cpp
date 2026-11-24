@@ -289,7 +289,7 @@ void AHRS::runEstimator(float dt)
 }
 
 // ---------------------------------------------------------------------------
-// Stage 4: still detection (unchanged semantics)
+// Stage 4: still detection
 // ---------------------------------------------------------------------------
 void AHRS::updateStillDetection(float dt)
 {

@@ -465,15 +465,13 @@ The old sources are kept in `archive/imu-pre-px4/` for reference.
 
 ## 7. Still detection and ZUPT
 
-Unchanged in semantics from the previous implementation, because both
-visualizers and the `still_failure_mask` telemetry depend on it.
-
 A 40-sample sliding window over the calibrated accel (in g) produces three
-independent checks:
+independent checks. The mean of the instantaneous acceleration norms, not
+the norm of the window mean, is used for bit 0:
 
 | Bit | Check | Limit |
 |---|---|---|
-| 0 | `| |accel| − 1 g |` | < 0.02 g |
+| 0 | mean acceleration norm `mean(|accel|) − 1 g` | enter still below 0.03 g; leave still above 0.05 g |
 | 1 | `|gyro|` | < 0.5 °/s |
 | 2 | accel vector standard deviation | < 0.004 g |
 

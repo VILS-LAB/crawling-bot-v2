@@ -19,6 +19,7 @@ test/host/run.sh
 | attitude estimator | leveling, 30° roll convergence, gyro integration, bias rejection, bias learning, NaN robustness |
 | accelerometer calibration | six-position solve recovers a known bias + matrix, degenerate face pair rejected |
 | magnetometer calibration | LM sphere fit recovers a known offset + radius, ellipsoid refinement is not worse |
+| still detection | constant 1.025 g acceleration, zero gyro and low noise become still using the 40-sample mean |
 | end-to-end tracking | yaw tracked against a synthetic ground truth |
 | servo motion profile | lands exactly on target, respects speed/accel limits, no overshoot, continuous retarget, soft limits, degenerate dt/config |
 

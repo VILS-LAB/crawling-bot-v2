@@ -473,7 +473,7 @@ estimate.
 | | Gen 1 | Gen 2 | Gen 3 |
 |---|---|---|---|
 | Window | none | 40 samples | 40 samples |
-| Accel norm check | `\|lin_acc\| < 0.1 m/s²` | `\|\|a\| − 1 g\| < 0.02 g` | same |
+| Accel norm check | `\|lin_acc\| < 0.1 m/s²` | instantaneous `\|\|a\| − 1 g\| < 0.02 g` | 40-sample mean norm; enter below 0.03 g, leave above 0.05 g |
 | Gyro check | `< 10 °/s` | `< 0.5 °/s` | same |
 | Std-dev check | none | `< 0.004 g` | same |
 | Failure reporting | none | 3-bit mask | 3-bit mask |

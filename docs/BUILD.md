@@ -101,15 +101,13 @@ On first boot, the robot will prompt for a robot number (1-8) via Serial Monitor
 
 ## Calibration
 
-For best AHRS performance, calibrate the MPU9250:
+For best AHRS performance, open the serial menu and run the guided calibration:
 
-1. Modify main.cpp to add calibration calls in setup():
-   ```cpp
-   ahrs.calibrateAccelGyro();  // Keep sensor still
-   ahrs.calibrateMag();         // Wave in figure-8 pattern
-   ```
-2. Upload and follow serial instructions
-3. Remove calibration calls after completion
+1. Open the serial monitor at 115200 baud.
+2. Send `q` to open the IMU menu.
+3. Send `4` to calibrate gyro, accelerometer and magnetometer, or use `1`, `2`
+   or `3` individually.
+4. Follow the serial and OLED instructions; send `x` to cancel.
 
 ## Testing
 

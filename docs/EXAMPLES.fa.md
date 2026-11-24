@@ -131,14 +131,8 @@ void setup() {
     Serial.begin(115200);
     ahrs.begin();
 
-    // Calibrate accelerometer and gyroscope
-    Serial.println("Keep sensor still for calibration...");
-    ahrs.calibrateAccelGyro();
-
-    // Calibrate magnetometer
-    Serial.println("Wave sensor in figure-8 pattern...");
-    ahrs.calibrateMag();
-
+    // از Serial کلید q را بفرستید، سپس برای کالیبراسیون کامل کلید 4 را انتخاب کنید.
+    // کالیبراسیون هدایت‌شده gyro، شتاب‌سنج و magnetometer را انجام می‌دهد.
     Serial.println("Calibration complete!");
 }
 ```

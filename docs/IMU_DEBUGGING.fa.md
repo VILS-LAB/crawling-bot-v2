@@ -68,7 +68,8 @@ vx..vz       velocity dead reckoning
 px..pz       position dead reckoning
 still        سکون تأییدشده پس از hold حداقل ۲۰۰ms
 still_failure_mask
-             بیت ۰: norm شتاب خارج از 1g±0.02g
+             بیت ۰: میانگین norm شتاب پنجره‌ی ۴۰ نمونه خارج از هیسترزیس سکون
+             (ورود زیر 0.03g، خروج بالای 0.05g)
              بیت ۱: norm ژیروسکوپ حداقل 0.5 dps
              بیت ۲: انحراف معیار norm شتاب در پنجره‌ی ۴۰ نمونه
 ```

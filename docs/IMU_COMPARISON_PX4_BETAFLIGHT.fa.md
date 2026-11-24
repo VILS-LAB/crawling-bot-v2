@@ -1,128 +1,55 @@
-# مقایسه‌ی روش فعلی با PX4 و Betaflight
+# مقایسه‌ی مسیر فعلی IMU با PX4 و Betaflight
 
-این مقایسه درباره‌ی مسیر واقعی فعلی پروژه است، نه قابلیت‌هایی که هنوز
-پیاده‌سازی نشده‌اند.
-
-## خلاصه
+این سند مسیر پیاده‌شده‌ی فعلی را مقایسه می‌کند؛ نه مسیرهای برنامه‌ریزی‌شده یا
+نسخه‌های قدیمی archive شده.
 
 | موضوع | پروژه‌ی فعلی | PX4 | Betaflight |
 |---|---|---|---|
-| هدف اصلی | اندازه‌گیری و dead reckoning کوتاه‌مدت crawler | تخمین حالت و کنترل پرواز | کنترل سریع پرواز |
-| کالیبراسیون gyro | bias و sigma با تشخیص سکون | guided calibration و کنترل کیفیت | کالیبراسیون سریع و runtime مناسب flight controller |
-| accelerometer | شش‌وضعیتی، bias/scale مستقل | چندجهتی با بررسی کیفیت و alignment | بیشتر مناسب attitude و کنترل، نه ellipsoid کامل در مسیر عادی |
-| اصلاح cross-axis | ندارد | در calibrationهای کامل‌تر دارد | معمولاً تمرکز اصلی روی latency و vibration است |
-| gyro filter | Median(5)، Butterworth، Adaptive scalar | low-pass، notch و estimator | low-pass، dynamic notch و RPM filter |
-| accel filter | Median(5)، Butterworth 8Hz، Adaptive scalar | فیلتر قبل از EKF و مدل estimator | فیلترهای کنترل و attitude |
-| attitude | complementary، بدون quaternion برای دوران پروژه | EKF/ECL یا estimator کامل | attitude سریع برای کنترل |
-| bias state | gyro bias ثابت از calibration | biasها در estimator تخمین زده می‌شوند | بسته به estimator و کاربرد کنترل |
-| position | دو انتگرال‌گیری IMU | fusion با GPS/vision/flow/range و غیره | هدف اصلی position نیست |
-| ZUPT | deadband و velocity reset ساده | innovation/state estimator | معمولاً برای position مستقل استفاده نمی‌شود |
+| هدف | attitude و dead reckoning کوتاه‌مدت crawler | navigation و کنترل پرواز با state estimator | attitude/rate control سریع |
+| فریم | FLU / world N-W-U | FRD / NED | معمولاً NED/FRD یا قرارداد داخلی سازگار |
+| gyro | median(3) -> notch -> LPF2p | low-pass، notch و dynamic notch | low-pass/dynamic notch/RPM filter |
+| accel | LPF2p 30 Hz | فیلتر شده قبل از estimator/EKF | فیلترهای زاویه و لرزش |
+| mag | LPF2p 5 Hz | fusion و magnetic declination | معمولاً نقش ثانویه یا کنترل هدینگ |
+| attitude | پورت `attitude_estimator_q` PX4 | attitude/position/velocity estimator | quaternion/gyro control internals |
+| calibration accel | شش وضعیت با ماتریس کامل `3×3` | guided multi-position و quality gate | معمولاً ساده‌تر؛ روی attitude فوکوس است |
+| calibration mag | LM sphere سپس ellipsoid | fitting و magnetic model | محدود و وابسته به کاربرد |
+| سکون | پنجره ۴۰ نمونه، ۳ بیت fail، هیسترزیس accel | معیارهای stationary و estimator state | مبتنی روی آرگومان‌های control/gyro |
+| موقعیت | dead reckoning کوتاه‌مدت | GPS/flow/vision/range/LiDAR + EKF | هدف اصلی position نیست |
 
-## کالیبراسیون
+## مسیر PX4 که در پروژه آمده
 
-### پروژه‌ی فعلی
+پروژه موارد زیر را مستقیماً یا با port محلی دارد:
 
-کاربر با OLED و Serial در شش وضعیت هدایت می‌شود. برای هر محور دو سمت گرفته
-می‌شود و از میانگین آن‌ها bias و scale ساخته می‌شود. این روش:
+- فیلتر median، notch و low-pass از PX4؛
+- `attitude_estimator_q` با bias state؛
+- کالیبراسیون gyro، accel و mag با quality gate؛
+- fit sphere/ellipsoid برای magnetometer؛
+- مدل اصلاح کامل ماتریسی accelerometer.
 
-- ساده و قابل انجام بدون ابزار آزمایشگاهی است؛
-- برای خطای offset و gain مناسب است؛
-- cross-axis coupling و misalignment کامل را اندازه نمی‌گیرد.
+تغییرات عمده نسبت به PX4 عبارت‌اند از قرارداد FLU/N-W-U، واحدهای پروژه،
+ماتریس کامل accel، وزن estimator کوچکتر برای gyro bias و نبود EKF/GPS/uORB.
 
-gyro با نمونه‌های ساکن و sigma بررسی می‌شود. magnetometer مسیر داخلی کتابخانه
-را دارد. رکورد هر ربات جداگانه در NVS ذخیره می‌شود و self-check در boot دارد.
+## تشخیص سکون فعلی
 
-### PX4
+پنجره ۴۰ نمونه روی accel calibrated است. بیت ۰ میانگین norm شتاب را می‌سنجد:
 
-PX4 برای calibration کاربر را در وضعیت‌های مشخص راهنمایی می‌کند، داده‌ی کافی
-جمع می‌کند و کیفیت پوشش/پایداری را بررسی می‌کند. در سامانه‌ی کامل، خروجی
-calibration به estimator و بررسی‌های preflight متصل است. مزیت مهم PX4 این است
-که calibration بخشی از یک زنجیره‌ی بزرگ‌تر شامل تخمین bias و innovation check
-است، نه فقط تبدیل raw به corrected.
+- ورود به حالت still فقط وقتی خطا کمتر از `0.03g` باشد؛
+- خروج از حالت still وقتی خطا بالاتر از `0.05g` باشد.
 
-### Betaflight
+بیت ۱ gyro کمتر از `0.5 dps` را می‌سنجد و بیت ۲ انحراف بردار accel کمتر از
+`0.004g` را می‌سنجد. ماسک صفر به‌همراه hold ۲۰۰ms و velocity reset را سکون اعلام
+می‌کند.
 
-Betaflight برای flight controller روی راه‌اندازی سریع، gyro قابل اعتماد و
-رفتار مناسب در ارتعاش تمرکز دارد. calibration آن باید کم‌هزینه و مناسب حلقه‌ی
-کنترل باشد. این با نیاز پروژه‌ی ما برای اندازه‌گیری سه‌محوره و dead reckoning
-کوتاه‌مدت یکسان نیست.
+## Betaflight
 
-## فیلتر و ارتعاش
+Betaflight به‌خصوص برای loopهای سریع و سرویس‌دهی به attitude/rate controller
+طراحی شده است. استفاده از dynamic notch، RPM filter و فیلترهای کم‌latency برای
+آن مناسب است اما خودکار کردن همه‌ی آن‌ها برای crawler بدون سنسور واقعی vibration
+یا telemetry موتور پروژه‌ی مستقلی لازم دارد.
 
-پروژه‌ی فعلی برای هر محور این زنجیره را دارد:
+## جمع‌بندی
 
-```text
-Median(5) -> Butterworth -> scalar adaptive Kalman
-```
-
-Median spikeهای کوتاه را حذف می‌کند. Butterworth لرزش‌های بالاتر از cutoff را
-کم می‌کند. Adaptive Kalman با innovation بزرگ اعتماد به اندازه‌گیری را کاهش
-می‌دهد. خروجی filtered accelerometer مستقیماً وارد velocity integration می‌شود.
-
-PX4 معمولاً فیلتر را بخشی از estimator می‌بیند و covariance، innovation gating،
-bias و مدل حرکت را همراه آن مدیریت می‌کند. بنابراین فیلتر فعلی از نظر ساختار
-جای EKF2 را نمی‌گیرد.
-
-Betaflight علاوه بر low-pass از dynamic notch و در کاربردهای مناسب RPM filtering
-استفاده می‌کند. این فیلترها به فرکانس واقعی موتور و ارتعاش وابسته‌اند و بدون
-اندازه‌گیری vibration نباید کورکورانه به پروژه‌ی crawler اضافه شوند.
-
-## attitude
-
-پروژه‌ی فعلی:
-
-- gyro فیلترشده را برای propagation استفاده می‌کند؛
-- accelerometer فقط در حالت نزدیک به سکون roll/pitch را آهسته اصلاح می‌کند؛
-- yaw بدون مرجع بیرونی drift می‌کند؛
-- تبدیل شتاب طبق دوران ترتیبی X سپس Y سپس Z انجام می‌شود.
-
-PX4 از estimator چندحالته استفاده می‌کند که attitude، velocity، position و
-biasها را در یک مدل مشترک نگه می‌دارد. این باعث می‌شود accelerometer صرفاً با
-یک شرط ساده‌ی norm وارد attitude نشود و measurementها innovation و covariance
-داشته باشند.
-
-Betaflight عمدتاً attitude را برای کنترل سریع می‌خواهد، نه position مطلق.
-بنابراین latency و پاسخ سریع معمولاً از دقت dead reckoning مهم‌تر است.
-
-## position و ZUPT
-
-در پروژه‌ی فعلی:
-
-```text
-filtered acceleration -> velocity -> position
-```
-
-و در سکون velocity صفر می‌شود. این یک ZUPT کامل نیست؛ چون contact model،
-covariance، innovation و تخمین هم‌زمان bias ندارد. deadband از drift کوتاه‌مدت
-کم می‌کند، ولی bias بسیار کوچک در مسیر طولانی همچنان position را خراب می‌کند.
-
-PX4 در صورت وجود GPS، optical flow، vision، range یا مرجع دیگر این اندازه‌گیری‌ها
-را با EKF fusion می‌کند. بدون مرجع بیرونی، PX4 هم از IMU تنها موقعیت مطلق
-پایدار تولید نمی‌کند.
-
-Betaflight معمولاً position estimator عمومی ندارد، چون مأموریت اصلی آن کنترل
-attitude و rate است.
-
-## چه چیزهایی از PX4 برای این پروژه مفید است؟
-
-1. guided calibration با تشخیص کیفیت و پیام واضح؛
-2. نگه‌داشتن gyro bias در estimator، نه فقط یک مقدار ثابت؛
-3. innovation gating برای ردکردن شتاب نامعتبر هنگام حرکت؛
-4. covariance یا confidence تطبیقی برای accelerometer؛
-5. ZUPT واقعی فقط پس از ساختن stationary detector قابل اعتماد؛
-6. مرجع بیرونی در صورت نیاز به position طولانی‌مدت.
-
-## چه چیزهایی از Betaflight مفید است؟
-
-1. فیلتر سریع و قابل تنظیم gyro؛
-2. اندازه‌گیری vibration واقعی قبل از انتخاب notch؛
-3. پرهیز از فیلترهای بیش‌ازحد کند در مسیر کنترل؛
-4. جداکردن مسیر telemetry از مسیر سریع sensor update.
-
-## جمع‌بندی صادقانه
-
-پروژه‌ی فعلی برای calibration دستی، attitude پایدار، مشاهده‌ی acceleration و
-حرکت کوتاه مناسب‌تر شده است، اما هنوز PX4 EKF2 یا estimator کامل Betaflight
-نیست. مهم‌ترین تفاوت با PX4 نبودن state estimator با bias/covariance و fusion
-مرجع بیرونی است. مهم‌ترین تفاوت با Betaflight نبودن dynamic notch/RPM filtering
-و متفاوت‌بودن هدف crawler است.
+پروژه از PX4 برای ریاضیات estimator، filters و calibration استفاده می‌کند اما
+یک EKF کامل، fusion GPS/vision یا مدل position چندحسگری ندارد. بنابراین برای
+attitude و حرکت کوتاه مفید است؛ برای موقعیت طولانی‌مدت و مطلق باید مرجع بیرونی
+و estimator موقعیت اضافه شود.

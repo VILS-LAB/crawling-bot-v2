@@ -122,15 +122,9 @@ void printSensorData() {
 void setup() {
     Serial.begin(115200);
     ahrs.begin();
-    
-    // Calibrate accelerometer and gyroscope
-    Serial.println("Keep sensor still for calibration...");
-    ahrs.calibrateAccelGyro();
-    
-    // Calibrate magnetometer
-    Serial.println("Wave sensor in figure-8 pattern...");
-    ahrs.calibrateMag();
-    
+
+    // Send 'q' from the serial console, then use menu key '4'.
+    // The guided calibration handles gyro, accelerometer and magnetometer.
     Serial.println("Calibration complete!");
 }
 ```
