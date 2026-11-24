@@ -19,6 +19,7 @@
 #include "../../lib/IMU/ImuAttitudeEstimator.h"
 #include "../../lib/IMU/ImuCalibration.h"
 #include "../../lib/IMU/ImuRotation.h"
+#include "../../include/config.h"
 
 namespace
 {
@@ -565,6 +566,52 @@ void testMagnetometerCalibration()
 }
 
 // ---------------------------------------------------------------------------
+// Still detection
+// ---------------------------------------------------------------------------
+void testStillDetection()
+{
+    section("still detection");
+
+    float accelNormSumG = 0.0f;
+    float accelVectorVarianceSum = 0.0f;
+    float accelMean[3] = {};
+    float accelSquaresMean[3] = {};
+
+    for (int i = 0; i < 40; ++i)
+    {
+        const float zG = 1.025f + ((i % 3) - 1) * 0.0001f;
+        const float normG = sqrtf(zG * zG);
+        accelNormSumG += normG;
+        accelMean[2] += zG / 40.0f;
+        accelSquaresMean[2] += zG * zG / 40.0f;
+    }
+
+    const float meanNormG = accelNormSumG / 40.0f;
+    for (int axis = 0; axis < 3; ++axis)
+        accelVectorVarianceSum += fmaxf(0.0f,
+                                        accelSquaresMean[axis] -
+                                            accelMean[axis] * accelMean[axis]);
+    const float stdDevG = sqrtf(accelVectorVarianceSum);
+
+    bool still = false;
+    const float gyroNormDps = 0.0f;
+    const float accelErrorG = fabsf(meanNormG - 1.0f);
+    const bool accelNormPass =
+        still
+            ? accelErrorG <= STILL_ACCEL_LEAVE_THRESHOLD_G
+            : accelErrorG < STILL_ACCEL_ENTER_THRESHOLD_G;
+    const uint8_t mask =
+        (!accelNormPass ? (1u << 0) : 0u) |
+        (gyroNormDps >= 0.5f ? (1u << 1) : 0u) |
+        (stdDevG >= 0.004f ? (1u << 2) : 0u);
+
+    still = (mask == 0);
+    check(still, "constant 1.025 g accel, zero gyro, and low noise become still");
+    check((mask & (1u << 0)) == 0, "1.025 g mean norm passes still accel bit0");
+    checkNear(meanNormG, 1.025f, 0.001f, "40-sample mean accel norm");
+}
+
+// ---------------------------------------------------------------------------
 // End-to-end: a synthetic rotation must be tracked by the estimator
 // ---------------------------------------------------------------------------
 void testEndToEndTracking()
@@ -613,6 +660,7 @@ int main()
     testEstimator();
     testAccelerometerCalibration();
     testMagnetometerCalibration();
+    testStillDetection();
     testEndToEndTracking();
 
     printf("\n%d checks, %d failures\n", gChecks, gFailures);

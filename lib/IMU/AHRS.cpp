@@ -25,7 +25,6 @@ constexpr uint16_t MAG_CAL_MAX_SAMPLES = 1200;
 constexpr float MAG_CAL_MIN_SAMPLE_DISTANCE_UT = 3.0f;
 
 // --- still detection -------------------------------------------------------
-constexpr float STILL_ACCEL_NORM_TOLERANCE_G = 0.02f;
 constexpr float STILL_GYRO_NORM_MAX_DPS = 0.5f;
 constexpr float STILL_ACCEL_VECTOR_STDDEV_MAX_G = 0.004f;
 constexpr uint8_t STILL_FAILURE_ACCEL_NORM = 1u << 0;
@@ -322,8 +321,26 @@ void AHRS::updateStillDetection(float dt)
     if (accelHistoryCount < STILL_ACCEL_WINDOW_SAMPLES)
         ++accelHistoryCount;
 
+    float accelMeanNormG = 0.0f;
+    if (accelHistoryCount > 0)
+    {
+        for (uint16_t i = 0; i < accelHistoryCount; ++i)
+        {
+            const float x = accelHistory[i][0];
+            const float y = accelHistory[i][1];
+            const float z = accelHistory[i][2];
+            accelMeanNormG += sqrtf(x * x + y * y + z * z);
+        }
+        accelMeanNormG /= accelHistoryCount;
+    }
+
     uint8_t stillFailureMask = 0;
-    if (fabsf(accelNormG - 1.0f) >= STILL_ACCEL_NORM_TOLERANCE_G)
+    const float accelNormErrorG = fabsf(accelMeanNormG - 1.0f);
+    const bool accelNormPass =
+        isStatic
+            ? accelNormErrorG <= STILL_ACCEL_LEAVE_THRESHOLD_G
+            : accelNormErrorG < STILL_ACCEL_ENTER_THRESHOLD_G;
+    if (!accelNormPass)
         stillFailureMask |= STILL_FAILURE_ACCEL_NORM;
     if (gyroNorm >= STILL_GYRO_NORM_MAX_DPS)
         stillFailureMask |= STILL_FAILURE_GYRO_NORM;

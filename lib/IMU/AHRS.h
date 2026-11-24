@@ -209,7 +209,7 @@ private:
     imu::AttitudeEstimator estimator;
     bool estimatorSeeded = false;
 
-    // Still detection (unchanged semantics, the visualizers depend on it)
+    // Still detection (the visualizers depend on these fields)
     bool isStatic = true;
     unsigned long stationaryStartTime = 0;
     unsigned long biasStillStartTime = 0;

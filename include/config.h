@@ -71,6 +71,10 @@
 #define DEADBAND_MODE 2
 #define DEADBAND_MS2 0.01f
 
+// Still-detection accelerometer norm hysteresis, in g.
+#define STILL_ACCEL_ENTER_THRESHOLD_G 0.03f
+#define STILL_ACCEL_LEAVE_THRESHOLD_G 0.05f
+
 // IMU sampling task.
 //
 // The IMU runs in its own FreeRTOS task so the estimator sees a stable dt even
