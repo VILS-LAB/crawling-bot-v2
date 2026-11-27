@@ -15,7 +15,7 @@ Read this together with:
 * [ARCHITECTURE.md](./ARCHITECTURE.md) — how Gen 3 works today, in detail
 * [PX4_PORT.md](./PX4_PORT.md) — the precise PX4 source-to-file map
 * [CALIBRATION.md](./CALIBRATION.md) — how to actually run a calibration
-* [ROTATION_MATRIX.md](./ROTATION_MATRIX.md) — the one thing that never changed
+* [ROTATION_MATRIX.md](./ROTATION_MATRIX.md) — the explicit body-to-world transform and its convention
 
 ---
 
@@ -29,7 +29,7 @@ that motivated the rewrites, in the order they were discovered.
 | 1 | **Body-frame acceleration integrated as if it were world-frame** | Gen 1 | Position drifts wildly the moment the robot turns. `lin_acc` from the library is body-frame; integrating it directly into `position[]` is dimensionally wrong. |
 | 2 | **Attitude came from a filter we could not see or tune** | Gen 1 | The library's Madgwick ran with hard-coded `beta`/`zeta` and its own `deltaT` measured from `micros()` inside the library. No bias state, no way to gate the accelerometer, no way to know if it had converged. |
 | 3 | **Calibration had no quality gate and no persistence** | Gen 1 | `mpu->calibrateAccelGyro()` / `calibrateMag()` are min/max box fits. They report nothing, reject nothing, and are lost on reboot. A bad calibration was indistinguishable from a good one. |
-| 4 | **Yaw was pure gyro integration** | Gen 2 | The complementary filter fused accel into roll/pitch only. Yaw had no absolute reference at all, so it drifted without bound. |
+| 4 | **Yaw was pure gyro integration** | Gen 2 | The complementary filter fused accel into roll/pitch only; magnetometer data was not used for heading correction, so yaw accumulated gyro drift. |
 | 5 | **Sampling shared the Arduino loop** | Gen 1, Gen 2 | `dt` was whatever `millis()` happened to give. OLED refresh, servo writes and OTA all perturbed it, and the estimator integrated that jitter as real rotation. |
 
 Gen 3 addresses those issues in its current design. The sections below preserve
@@ -203,9 +203,9 @@ Worth stating, because it is the reason the rotation contract survived:
 
 ### 2.1 What it was
 
-Ten files, 1 691 lines, in `lib/IMU/`. Preserved byte-for-byte in
-[`archive/imu-pre-px4/`](../../archive/imu-pre-px4) — verified identical to
-`git show dev:lib/IMU/*`.
+Ten files, 1 691 lines, in `lib/IMU/`. The archived source is preserved under
+[`archive/imu-pre-px4/`](../../archive/imu-pre-px4) for historical comparison;
+this does not imply that the archive alone restores a complete compatible build.
 
 | File | Lines |
 |---|---|

@@ -4,11 +4,11 @@ Start here.
 
 | Document | Read it when you want to… |
 |---|---|
-| [ARCHITECTURE.md](./ARCHITECTURE.md) | understand the whole signal chain, the frame conventions, the design decisions and the known limitations |
-| [CALIBRATION.md](./CALIBRATION.md) | understand the calibration math and the fits (the *procedure* is in [../CALIBRATION.md](../CALIBRATION.md)) |
-| [ROTATION_MATRIX.md](./ROTATION_MATRIX.md) | know exactly what `rotateBodyToWorld()` does and why it is frozen |
+| [ARCHITECTURE.md](./ARCHITECTURE.md) | follow current signal processing, frames, estimator, telemetry, and known limits |
+| [CALIBRATION.md](./CALIBRATION.md) | understand calibration math and fits (procedure: [../CALIBRATION.md](../CALIBRATION.md)) |
+| [ROTATION_MATRIX.md](./ROTATION_MATRIX.md) | understand `rotateBodyToWorld()` and its coordinate convention |
 | [PX4_PORT.md](./PX4_PORT.md) | audit what came from PX4, what differs, and what was left out |
-| [IMPLEMENTATION_HISTORY.md](./IMPLEMENTATION_HISTORY.md) | compare the current stack against the previous one and against the original `main` branch, and see why each rewrite happened |
+| [IMPLEMENTATION_HISTORY.md](./IMPLEMENTATION_HISTORY.md) | review earlier implementations and why the current design changed (historical context, not a runbook) |
 
 > **Where this fits.** These pages document the sensing half of the robot. The
 > student-facing interface is the protocol ([../PROTOCOL.md](../PROTOCOL.md)); the
@@ -19,17 +19,19 @@ Start here.
 * The firmware uses the MPU9250's accelerometer, gyroscope and AK8963
   magnetometer. Its calibration fits, filters and quaternion attitude estimator
   are adapted from PX4; the complete PX4 runtime is not present.
-* The estimator's firmware frame and the sensor's physical mounting must not be
-  conflated. Firmware coordinates are body `+X forward, +Y left, +Z up`, while
-  this board is mounted with sensor/body `+X` toward chassis right and `+Y`
-  toward chassis forward. Consequently yaw is not the chassis compass heading;
+* The estimator's firmware frame labels and the board's physical orientation
+  must not be conflated. Firmware coordinates are body `+X forward, +Y left,
+  +Z up`, while the board is mounted with sensor `+X` toward chassis right and
+  `+Y` toward chassis forward. Consequently yaw is not the chassis compass
+  heading;
   see [ARCHITECTURE.md §2](./ARCHITECTURE.md#2-frame-conventions-read-this-before-touching-any-math).
 * Sampling and estimation run in a dedicated FreeRTOS task pinned to core 1.
   The I2C transaction is shared with the OLED under a mutex; estimation itself
   runs after the bus lock is released.
-* Boot only checks a complete stored calibration; it does not start guided
-  calibration. `CAL` runs gyro, six-position accelerometer and magnetometer
-  stages in order. Calibration is stored per robot number in NVS.
+* Boot checks that the stored accel/mag fit fields are complete and pass a
+  bounded self-check; it does not start guided calibration. `CAL` runs gyro,
+  six-position accelerometer and magnetometer stages in order. Calibration is
+  stored per robot number in NVS; the record has no separate gyro-valid flag.
 * CSV telemetry is emitted by the command server (USB serial defaults to 10 Hz;
   TCP clients start quiet), and contains filtered diagnostic fields alongside
   the unfiltered values used by the estimator. See [PROTOCOL.md](../PROTOCOL.md).
@@ -64,7 +66,7 @@ counts or prose summaries:
 # firmware
 pio run -e esp32-s3-devkitm-1
 
-# host math tests (no hardware, ~1 s)
+# host-side math, servo-motion and parser tests (no robot required)
 test/host/run.sh
 
 # visualizers

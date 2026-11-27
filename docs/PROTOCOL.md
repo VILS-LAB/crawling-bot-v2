@@ -174,9 +174,11 @@ CALRESULT,ok=1,sensors=all
 * Send `x` on serial during any stage to cancel.
 * A successful run is stored in NVS, keyed by robot number, and the robot starts
   using it immediately (no reboot required).
-* `cal=1` in `GET` only becomes true once the accelerometer **and** magnetometer
-  stages are both stored. A lone `CAL gyro` on a blank robot therefore leaves the
-  robot reported as uncalibrated; run `CAL` (all stages) to finish it.
+* `cal=1` in `GET` requires all six accelerometer positions and a magnetometer
+  fit, plus a successful boot self-check or guided run in this boot. The stored
+  record has no separate gyro-stage-valid flag, so this does not prove that the
+  gyro stage was recently run. A lone `CAL gyro` on a blank robot remains
+  incomplete; for a new robot run `CAL` (all stages).
 
 ## Error replies
 

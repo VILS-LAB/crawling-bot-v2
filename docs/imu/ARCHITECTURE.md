@@ -128,8 +128,8 @@ body -> Rx(roll) -> Ry(pitch) -> Rz(yaw) -> world
 
 which is algebraically `Rz(yaw) · Ry(pitch) · Rx(roll)` — the same convention
 the estimator reports Euler angles in. It is kept as an explicit sequential
-implementation (not a matrix multiply) because that is the exact code path the
-hardware and both visualizers were validated against. `bodyToWorldMatrix()`
+implementation (not a matrix multiply) because it makes the convention
+explicit and is covered by the host equivalence test. `bodyToWorldMatrix()`
 exposes the equivalent matrix for tests and tooling; the host test asserts the
 two agree to 1e-5.
 
@@ -356,9 +356,16 @@ are checked:
 | temperature drift since calibration | ≤ 15 °C (skipped if stored temperature ≤ 0 °C) |
 
 On success the robot goes straight to normal operation (`CAL,SELF_CHECK,ok`).
-On failure — or when nothing is stored — it boots **uncalibrated**: the servos
-stay parked, the OLED shows `Uncalibrated - run CAL`, and `GET` reports `cal=0`.
-A full guided recalibration only runs when the operator sends `CAL`.
+On failure — or when the required accelerometer/magnetometer fit fields are
+incomplete — it boots **uncalibrated**: the servos stay parked, the OLED shows
+`Uncalibrated - run CAL`, and `GET` reports `cal=0`. A full guided calibration
+only runs when the operator sends `CAL`.
+
+The record has no separate gyro-stage-valid flag. `calibrationComplete()` checks
+for all six accelerometer positions and a magnetometer fit; therefore selective
+`CAL accel` plus `CAL mag` can satisfy the completeness predicate without a new
+gyro stage. For a new robot, use `CAL` (all three stages) as the practical
+procedure; do not interpret `cal=1` as proof that every stage was freshly run.
 
 ### 4.5 Storage
 
@@ -390,7 +397,7 @@ Port of PX4's `attitude_estimator_q`
 correction = 0
 
 # magnetometer heading
-if mag usable:
+if magWeight > 0 and mag is finite and |mag| > 1 uT:
     mag_earth = q · mag
     err       = wrap(atan2(mag_earth.y, mag_earth.x) − declination)
     gain      = magWeight · (spinRate > 50°/s ? min(spinRate/50°/s, 10) : 1)

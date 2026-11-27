@@ -1,9 +1,9 @@
 # The body → world rotation contract
 
 This document describes the rotation the project uses to move a body-frame
-vector into the world frame. It is **frozen**: the hardware and both
-visualizers were validated against it, so it is not replaced by the attitude
-estimator's internal math.
+vector through the explicit `rotateBodyToWorld()` transform. The convention is
+kept stable for consumers; its algebraic form is tested against the matrix
+implementation. The transform is distinct from the estimator update equations.
 
 Implementation: [`ImuRotation.cpp`](../../lib/IMU/ImuRotation.cpp).
 Full architecture: [ARCHITECTURE.md](./ARCHITECTURE.md).
@@ -15,7 +15,7 @@ firmware body  : X forward, Y left,  Z up     (FLU, right-handed)
 firmware world : X north,   Y west,  Z up     (N-W-U, right-handed)
 ```
 
-The sensor is mounted with sensor/body +X toward chassis right and +Y toward
+The sensor is mounted with sensor +X toward chassis right and +Y toward
 chassis forward. The code does not rotate sensor samples into a separate chassis
 frame, so the firmware's body-frame "forward" label does not match physical
 chassis forward on this mounting. See
@@ -75,7 +75,7 @@ unbounded vertical drift. It is not a substitute for a full gravity model.
 The estimator produces a quaternion, and `q.rotate(v)` would give the same
 result. The sequential form is kept because:
 
-1. it is the exact code path the hardware was validated with;
+1. it is the explicit transform used by the project and included visualizers;
 2. it makes the contract readable and auditable without quaternion algebra;
 3. changing it would silently change the meaning of every plot in both
    visualizers.

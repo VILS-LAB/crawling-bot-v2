@@ -20,10 +20,10 @@ by robot number, and **verifies** it at boot.
 Boot never blocks waiting for a human and never starts a full calibration:
 
 ```text
-load calibration -> verify (2 s warm-up + 200 samples) -> valid?
-                                                          ├─ yes -> Ready
-                                                          └─ no  -> servos parked,
-                                                                    "Uncalibrated - run CAL"
+load calibration -> complete record? -> warm up 2 s, check 200 samples -> valid?
+                                                                      ├─ yes -> Ready
+                                                                      └─ no  -> servos parked,
+                                                                                "Uncalibrated - run CAL"
 ```
 
 A robot with `cal=0` still boots, answers `PING`/`ID`/`GET` and accepts OTA.
@@ -96,11 +96,13 @@ GET
 OK SNAP,...,cal=1,...
 ```
 
-`cal=1` requires a complete stored record containing all six accelerometer
-positions and a magnetometer fit, then a successful boot self-check. A lone
-`CAL gyro` on a blank robot leaves `cal=0` because the record still lacks the
-required accel and mag calibration. A newly completed guided run is used
-immediately; after reboot, the stored record must pass its self-check again.
+`cal=1` requires the firmware's completeness check (six accelerometer
+positions and a magnetometer fit) plus a successful self-check or guided run in
+this boot. The record has no separate gyro-stage-valid flag, so `cal=1` does not
+prove a gyro stage was performed recently. On a new robot, run `CAL` (all three
+stages). A lone `CAL gyro` on a blank robot leaves it incomplete. Newly
+completed calibration is used immediately; after reboot, stored data must pass
+the self-check again.
 
 ## Troubleshooting
 
