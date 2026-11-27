@@ -1,406 +1,126 @@
-# Code Examples
+# Examples
 
-This directory contains example code snippets for using the various libraries.
+Runnable code for working with the robot. **Client** examples are what a student
+project uses; **firmware** examples are for maintainers extending the robot.
 
-## Display Examples
+## Client examples (students)
 
-### Basic Text Display
+Start here. The robot is driven entirely through the protocol
+([PROTOCOL.md](PROTOCOL.md)), so these examples work from any machine on the
+robot's WiFi.
+
+| Example | Language | Shows |
+|---|---|---|
+| [`examples/python/hello_robot.py`](../examples/python/hello_robot.py) | Python | connect, read identity and one snapshot |
+| [`examples/python/walk_legs.py`](../examples/python/walk_legs.py) | Python | send actions, wait for the legs to settle |
+| [`examples/python/stream_telemetry.py`](../examples/python/stream_telemetry.py) | Python | stream frames to screen or CSV |
+| [`examples/python/calibrate.py`](../examples/python/calibrate.py) | Python | guided calibration with live stages |
+| [languages/cpp.md](languages/cpp.md) | C++ | raw socket client, no dependencies |
+| [languages/javascript.md](languages/javascript.md) | Node | `net`-based client with promise replies |
+| [languages/matlab.md](languages/matlab.md) | MATLAB | `tcpclient` session for quick experiments |
+
+### Observe → decide → act
+
+The shape of every controller, regardless of language or algorithm:
+
+```python
+from crawlingbot import Robot
+
+with Robot.tcp("192.168.4.1") as bot:
+    while True:                       # your loop, with your own stop condition
+        snap = bot.snapshot()         # 1. observe
+        action = policy(snap)         # 2. decide (your code)
+        bot.act(*action)              # 3. act
+```
+
+What a reward function might look at, from the same snapshot:
+
+| Field | Meaning | Typical use |
+|---|---|---|
+| `roll`, `pitch` | body tilt, degrees | penalise falling over |
+| `accel` | body acceleration, m/s² | detect a step or an impact |
+| `still` | motion detector | reward progress, reject noise |
+| `velocity` | estimated speed, m/s | reward forward motion |
+| `down`, `up` | current leg angles | detect a completed step |
+
+### Logging a run for offline learning
+
+```python
+import csv
+from crawlingbot import Robot
+
+with Robot.tcp() as bot, open("run.csv", "w", newline="") as handle:
+    writer = csv.writer(handle)
+    writer.writerow(["t_ms", "roll", "pitch", "yaw", "vx", "vy", "down", "up", "action"])
+    for frame in bot.frames(hz=50, count=3000):
+        snap = bot.snapshot()
+        action = policy(frame)                 # your decision
+        bot.act(*action)
+        writer.writerow([frame.timestamp_ms, frame.roll, frame.pitch, frame.yaw,
+                         *frame.velocity, snap.down, snap.up, action])
+```
+
+### Driving the visualizers over TCP
+
+`tools/imu_visualizer*.py` read the same `IMU,` CSV the robot streams, so a
+network bridge is enough if a tool only speaks serial:
+
+```bash
+# stream to a file and replay it
+python examples/python/stream_telemetry.py --seconds 30 --csv run.csv
+python tools/imu_visualizer_v2.py --replay run.csv
+```
+
+## Firmware examples (maintainers)
+
+> Only needed if you are changing the robot itself. Students should not edit
+> these.
+
+### Screen pages
+
 ```cpp
-#include <Display.h>
-
-Display display;
-
-void setup() {
-    display.begin();
+void showTelemetry()
+{
+    const ImuTelemetry &imu = ahrs.getTelemetry();
     display.clear();
-    display.print("Hello Robot!", 0, 0);
-}
-```
-
-### Multi-line Display
-```cpp
-display.clear();
-display.print("Robot Status:", 0, 0);
-display.print("Active", 0, 16);
-display.print("Battery: 95%", 0, 32);
-```
-
-### Progress Bar
-```cpp
-// Show OTA progress
-for (int i = 0; i <= 100; i += 10) {
-    display.drawProgressBar(i);
-    delay(500);
-}
-```
-
-## AHRS Examples
-
-### Basic Motion Detection
-```cpp
-#include <AHRS.h>
-
-AHRS ahrs;
-
-void setup() {
-    Serial.begin(115200);
-    ahrs.begin();
-}
-
-void loop() {
-    ahrs.update();
-    
-    if (ahrs.isMoving()) {
-        Serial.println("Robot is moving!");
-    }
-    
-    delay(100);
-}
-```
-
-### Orientation Monitoring
-```cpp
-void loop() {
-    ahrs.update();
-    
-    Serial.print("Roll: "); Serial.print(ahrs.getRoll());
-    Serial.print(" Pitch: "); Serial.print(ahrs.getPitch());
-    Serial.print(" Yaw: "); Serial.println(ahrs.getYaw());
-    
-    delay(100);
-}
-```
-
-### Displacement Tracking
-```cpp
-void setup() {
-    Serial.begin(115200);
-    ahrs.begin();
-    ahrs.resetDisplacement();  // Start from zero
-}
-
-void loop() {
-    ahrs.update();
-    
-    Serial.print("Displacement X: ");
-    Serial.print(ahrs.getDisplacementX());
-    Serial.print(" m, Y: ");
-    Serial.print(ahrs.getDisplacementY());
-    Serial.println(" m");
-    
-    delay(500);
-}
-```
-
-### Full Sensor Data
-```cpp
-void printSensorData() {
-    ahrs.update();
-    
-    Serial.println("=== Accelerometer (m/s²) ===");
-    Serial.printf("X: %.2f, Y: %.2f, Z: %.2f\n", 
-                  ahrs.getAccelX(), ahrs.getAccelY(), ahrs.getAccelZ());
-    
-    Serial.println("=== Gyroscope (deg/s) ===");
-    Serial.printf("X: %.2f, Y: %.2f, Z: %.2f\n", 
-                  ahrs.getGyroX(), ahrs.getGyroY(), ahrs.getGyroZ());
-    
-    Serial.println("=== Magnetometer (uT) ===");
-    Serial.printf("X: %.2f, Y: %.2f, Z: %.2f\n", 
-                  ahrs.getMagX(), ahrs.getMagY(), ahrs.getMagZ());
-    
-    Serial.println("=== Orientation (degrees) ===");
-    Serial.printf("Roll: %.2f, Pitch: %.2f, Yaw: %.2f\n", 
-                  ahrs.getRoll(), ahrs.getPitch(), ahrs.getYaw());
-    
-    Serial.printf("Temperature: %.2f°C\n", ahrs.getTemperature());
-}
-```
-
-### Calibration
-```cpp
-void setup() {
-    Serial.begin(115200);
-    ahrs.begin();
-
-    // Send 'q' from the serial console, then use menu key '4'.
-    // The guided calibration handles gyro, accelerometer and magnetometer.
-    Serial.println("Calibration complete!");
-}
-```
-
-## Servo Control Examples
-
-> **Safety first.** Every move is ramped: the driver accelerates, cruises and
-> decelerates into the target, and it remembers where each leg is. You cannot
-> slam a leg into the ground by commanding a big step, and you do not need to
-> add `delay()` between moves. See [SERVO_SAFETY.md](SERVO_SAFETY.md).
-
-### Basic Movement
-```cpp
-#include <ServoControl.h>
-
-ServoControl servos(SERVO_PIN_DOWN, SERVO_PIN_UP);
-
-void setup() {
-    servos.begin();
-    servos.moveDown(90);   // ramped, blocks until the leg arrives
-    servos.moveUp(90);
-}
-```
-
-### Non-blocking Movement (recommended in `loop()`)
-```cpp
-void loop() {
-    servos.update();          // must run every loop
-
-    if (someCondition) {
-        servos.moveDownTo(120);   // just sets a target, returns immediately
-        servos.moveUpTo(60);
-    }
-
-    if (servos.isMoving()) {
-        // still travelling
-    }
-}
-```
-
-### Smooth Movement
-```cpp
-void crawlForward() {
-    // Blocks until the leg arrives; the ramp is handled for you.
-    servos.moveDownSmooth(90);
-    servos.moveUpSmooth(90);
-    servos.setInitialPosition();
-}
-```
-
-### Position Tracking
-```cpp
-void loop() {
-    Serial.print("Down servo: ");
-    Serial.print(servos.getCurrentDownAngle());
-    Serial.print("°, target: ");
-    Serial.print(servos.getDownTarget());
-    Serial.print("°, Up servo: ");
-    Serial.print(servos.getCurrentUpAngle());
-    Serial.println("°");
-
-    delay(1000);
-}
-```
-
-### Crawling Pattern
-```cpp
-void crawlCycle() {
-    // Lift front
-    servos.moveUpSmooth(45);
-
-    // Push back
-    servos.moveDownSmooth(135);
-
-    // Lower front
-    servos.moveUpSmooth(90);
-
-    // Pull forward
-    servos.moveDownSmooth(45);
-
-    // Reset
-    servos.setInitialPosition();
-}
-```
-
-### Tuning Speed and Limits
-```cpp
-void setup() {
-    servos.begin();
-
-    // Slow the legs down and keep them away from the mechanical stops.
-    servos.setSpeed(90.0f);    // degrees per second
-    servos.setAccel(300.0f);   // degrees per second squared
-    servos.setDownLimits(20, 160);
-    servos.setUpLimits(20, 160);
-}
-```
-
-### Emergency Stop
-```cpp
-void loop() {
-    servos.update();
-
-    if (emergencyStopRequested) {
-        servos.stop();   // freeze both legs where they are
-    }
-}
-```
-
-## Network Examples
-
-### Basic Setup
-```cpp
-#include <Network.h>
-#include <Display.h>
-
-Display display;
-Network* network;
-
-void setup() {
-    Serial.begin(115200);
-    display.begin();
-    
-    network = new Network(&display);
-    network->begin();
-    network->startOTATask();
-    
-    Serial.print("Robot #");
-    Serial.println(network->getRobotNumber());
-    Serial.print("Connect to: ");
-    Serial.println(network->getSSID());
-}
-```
-
-### Display Network Info
-```cpp
-void showNetworkInfo() {
-    display.clear();
-    display.print("Robot #", 0, 0);
-    display.print(network->getRobotNumber());
-    
+    display.print(ahrs.isMoving() ? "MOVING" : "STILL", 0, 0);
     display.setCursor(0, 16);
-    display.print(network->getSSID());
-    
-    display.setCursor(0, 32);
-    display.print("OTA Ready");
+    display.print("R:");
+    display.printFloat(imu.roll, 1);
+    display.print(" P:");
+    display.printFloat(imu.pitch, 1);
+    display.refresh();
 }
 ```
 
-## Training Examples (Template)
-
-### Basic Training Structure
-```cpp
-#include <Training.h>
-
-Training training;
-
-void setup() {
-    Serial.begin(115200);
-    training.begin();
-}
-
-void loop() {
-    if (Serial.available()) {
-        char cmd = Serial.read();
-        
-        if (cmd == 't') {
-            // Start training
-            training.startTraining();
-        } else if (cmd == 's') {
-            // Stop training
-            training.stopTraining();
-        } else if (cmd == 'e') {
-            // Execute learned behavior
-            if (training.hasLearnedBehavior()) {
-                training.executeLearnedBehavior();
-            }
-        }
-    }
-}
-```
-
-## Complete Integration Example
-
-### Robot Control Loop
-```cpp
-#include <Arduino.h>
-#include <Display.h>
-#include <AHRS.h>
-#include <ServoControl.h>
-#include <Network.h>
-#include <Training.h>
-
-Display display;
-AHRS ahrs;
-ServoControl servos(32, 33);
-Network* network;
-Training training;
-
-unsigned long lastUpdate = 0;
-const unsigned long UPDATE_INTERVAL = 100;  // 100ms
-
-void setup() {
-    Serial.begin(115200);
-    
-    display.begin();
-    network = new Network(&display);
-    network->begin();
-    network->startOTATask();
-    
-    ahrs.begin();
-    servos.begin();
-    training.begin();
-}
-
-void loop() {
-    unsigned long currentTime = millis();
-    
-    if (currentTime - lastUpdate >= UPDATE_INTERVAL) {
-        lastUpdate = currentTime;
-        
-        // Update sensors
-        ahrs.update();
-        
-        // Display status
-        updateDisplay();
-        
-        // Check for movement
-        if (ahrs.isMoving()) {
-            // Robot is being moved externally
-            Serial.println("External motion detected");
-        }
-        
-        // Execute learned behavior if training is done
-        if (!training.isTraining() && training.hasLearnedBehavior()) {
-            training.executeLearnedBehavior();
-        }
-    }
-}
-
-void updateDisplay() {
-    display.clear();
-    display.print("Robot #", 0, 0);
-    display.print(network->getRobotNumber());
-    
-    display.setCursor(0, 16);
-    display.print("Yaw: ");
-    display.print((int)ahrs.getYaw());
-    
-    display.setCursor(0, 32);
-    if (training.isTraining()) {
-        display.print("Training...");
-    } else {
-        display.print("Ready");
-    }
-}
-```
-
-## Sensor-Based Movement Example
+### Adding a boot step
 
 ```cpp
-void reactiveMovement() {
-    ahrs.update();
-    
-    float pitch = ahrs.getPitch();
-    
-    // Adjust servos based on pitch (tilt)
-    if (pitch > 10) {
-        // Tilted forward - compensate
-        servos.moveDownSmooth(60, 5);
-    } else if (pitch < -10) {
-        // Tilted backward - compensate
-        servos.moveDownSmooth(120, 5);
-    } else {
-        // Level - normal position
-        servos.moveDownSmooth(90, 5);
-    }
+// src/main.cpp
+showBootMessage("Checking battery...");
+if (!batteryOk())
+{
+    Serial.println("WARN,BATTERY_LOW");
+    // Do not halt: the robot must stay reachable.
 }
 ```
+
+### Reading sensor state from firmware
+
+```cpp
+ahrs.update();                       // copy the newest snapshot
+const ImuTelemetry &imu = ahrs.getTelemetry();
+Serial.printf("roll=%.2f pitch=%.2f yaw=%.2f trust=%.3f\n",
+              imu.roll, imu.pitch, imu.yaw, imu.trust);
+```
+
+### Adding a protocol command
+
+See [DEVELOPMENT.md](DEVELOPMENT.md#adding-a-protocol-command) — it lists every
+file that must change, including the tests and the Python client.
+
+## See also
+
+* [PROTOCOL.md](PROTOCOL.md) — the interface these examples use
+* [languages/](languages/README.md) — per-language guides
+* [PROJECT.md](PROJECT.md) — how the examples fit into the course phases

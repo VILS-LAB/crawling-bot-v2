@@ -80,13 +80,37 @@ public:
 
     void setDisplay(Display *display) { statusDisplay = display; }
 
+    // Optional progress sink used during a guided calibration so a remote
+    // client (TCP) sees the same stage messages as the OLED and serial port.
+    using ProgressSink = void (*)(const char *line, void *context);
+    void setProgressSink(ProgressSink sink, void *context)
+    {
+        progressSink = sink;
+        progressContext = context;
+    }
+
     // Copy the latest snapshot produced by the sampling task. Cheap and
     // non-blocking; safe to call from the Arduino loop.
     void update();
 
+    // Boot-time calibration check. Never blocks on user input and never starts
+    // the guided procedure: it only verifies a stored calibration with a short
+    // self-check. Returns true when the robot is ready to run with a valid
+    // calibration, false when it should boot uncalibrated (servos parked) until
+    // a CAL command is issued.
     bool calibrate();
-    void serviceConsole();
-    bool isSerialTelemetryEnabled() const { return serialTelemetryEnabled; }
+
+    // Interactive guided calibration (the CAL command on serial or TCP).
+    // Blocks: it pauses the sampling task, drives the OLED and serial prompts
+    // and suspends the task watchdog for the duration. With every stage
+    // selected the order is gyro, accelerometer, magnetometer (PX4's order).
+    bool runGuidedCalibration(bool gyro = true, bool accelerometer = true,
+                              bool magnetometer = true);
+
+    // True when the robot has a usable calibration (loaded and self-checked, or
+    // freshly calibrated in this boot).
+    bool isCalibrated() const { return calibrationValid; }
+    bool isInitialized() const { return initialized; }
 
     // Motion detection
     bool isMoving() { return !telemetry.still; }
@@ -153,6 +177,10 @@ private:
     void taskLoop();
     void processSample(float dt);
 
+    // Locked single sensor transaction: mpu->update() plus the cached getters
+    // belong together, and the OLED shares the bus from the other core.
+    bool updateSensor();
+
     // --- pipeline stages ---------------------------------------------------
     void readAndCalibrate();
     void runFilters();
@@ -166,23 +194,28 @@ private:
     bool calibrateGyroscope();
     bool calibrateAccelerometer();
     bool calibrateMagnetometer();
-    bool checkCalibrationAtBoot();
+    bool verifyCalibration();
+    // A record only counts as usable when the accelerometer and magnetometer
+    // stages are present; a lone gyro or accel run on a blank robot leaves the
+    // other sensors at identity and must not be reported as calibrated.
+    bool calibrationComplete() const;
     bool saveCalibration();
     void clearStoredCalibration();
     bool loadCalibration();
-    void printCalibrationMenu() const;
-    void printCalibrationStatus() const;
     bool consumeCalibrationControl();
     void showCalibrationScreen(const char *title, const char *line1 = nullptr,
                                const char *line2 = nullptr);
+    void reportProgress(const char *format, ...);
 
     // --- state -------------------------------------------------------------
     MPU9250 *mpu = nullptr;
     bool initialized = false;
-    bool calibrationLoaded = false;
+    bool calibrationLoaded = false;   // a record exists in NVS
+    bool calibrationValid = false;    // that record (or a fresh run) passed checks
     uint8_t robotNumber = 1;
     Display *statusDisplay = nullptr;
-    bool serialTelemetryEnabled = true;
+    ProgressSink progressSink = nullptr;
+    void *progressContext = nullptr;
 
     imu::ImuCalibrationData calibration{};
 

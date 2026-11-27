@@ -24,6 +24,35 @@
 #define SERIAL_BAUD_RATE 115200
 #define ENABLE_SERVOS 1
 
+// Command protocol.
+//
+// The same ASCII line protocol is served on USB serial and on a TCP socket
+// (see docs/PROTOCOL.md). The TCP port is opened on the robot's access point.
+#define PROTOCOL_TCP_PORT 4242
+#define PROTOCOL_MAX_CLIENTS 4
+#define PROTOCOL_LINE_MAX 96
+#define PROTOCOL_MAX_STREAM_HZ 50
+
+// I2C bus.
+//
+// The OLED and the MPU9250 share SDA/SCL, so every logical transaction is
+// serialized with a FreeRTOS mutex (lib/I2CBus). 400 kHz is the fast-mode rate
+// both devices support and keeps a 200 Hz IMU sample well inside its budget.
+#define I2C_CLOCK_HZ 400000
+#define I2C_LOCK_TIMEOUT_MS 50
+
+// Hardware task watchdog (esp_task_wdt).
+//
+// The Arduino loop task and the IMU sampling task subscribe to the watchdog and
+// feed it every iteration. A hang therefore resets the robot instead of leaving
+// it alive with frozen legs. Blocking calibration runs disarm the loop task for
+// the duration so a long guided procedure is not treated as a hang.
+//
+// Set to 0 for a bench session where a breakpoint stop should not reboot the
+// board (watchdog::begin() turns into a no-op).
+#define WATCHDOG_ENABLE 1
+#define WATCHDOG_TIMEOUT_S 3
+
 // Servo motion safety.
 //
 // Every move is ramped (trapezoidal profile) instead of jumping to the target,
@@ -65,6 +94,8 @@
 #define SERVO_HEALTH_BASELINE_MS 300
 #define SERVO_HEALTH_MOTION_DPS 6.0f
 #define ENABLE_SERVO_MOTION_CHECK 1
+// Default USB-serial telemetry period. This is the rate the existing
+// visualizers expect; a client can change it at runtime with STREAM <hz>.
 #define TELEMETRY_INTERVAL_MS 100
 #define DISPLAY_PAGE_INTERVAL_MS 3000
 #define IMU_CALIBRATION_TIMEOUT_MS 90000

@@ -188,6 +188,47 @@ So the sampling loop lives in its own FreeRTOS task:
 * `ahrs.update()` in `loop()` is a cheap copy of the latest snapshot under a
   spinlock. It never blocks on I2C.
 
+#### Shared I2C bus
+
+The OLED (core 0) and the MPU9250 (core 1) are on the same SDA/SCL pins.
+Interleaving their transfers makes the sensor return shifted or garbled bytes,
+so **every** bus access goes through a recursive mutex in
+[`lib/I2CBus`](../../lib/I2CBus/I2CBus.h):
+
+* `i2c::begin()` starts the peripheral once at `I2C_CLOCK_HZ` (400 kHz) and owns
+  the clock for both drivers (`Display` and `AHRS` pass `periphBegin = false` /
+  create no device of their own).
+* `i2c::Guard` is an RAII lock with a timeout (`I2C_LOCK_TIMEOUT_MS`). A timeout
+  means the other core is wedged; the caller skips its transfer instead of
+  blocking the loop.
+* `AHRS::updateSensor()` holds the lock for exactly one `mpu->update()` burst.
+  The getters below it read values cached in the driver, so the hold time stays
+  at one I2C transaction and the estimator work runs unlocked.
+* The Adafruit SSD1306 library sets the bus to `clkDuring` for a transfer and
+  restores `clkAfter`; both are constructed as 400 kHz so a display refresh does
+  not drop the bus back to 100 kHz under the 200 Hz IMU reads.
+
+#### Hardware watchdog
+
+`lib/SystemWatchdog` wraps `esp_task_wdt`:
+
+| Task | Subscription |
+|---|---|
+| Arduino loop (core 0) | `watchdog::begin()` in `setup()` |
+| IMU task (core 1) | `watchdog::addCurrentTask()` in `taskEntry()` |
+
+The timeout is `WATCHDOG_TIMEOUT_S` (3 s) with panic + reset, so a hang reboots
+the robot instead of leaving powered, frozen legs. Legitimate blocking work is
+handled explicitly:
+
+* `CAL` (`runGuidedCalibration`) uses `watchdog::Suspend`, which unsubscribes
+  the loop task for the duration of the guided procedure and resubscribes on
+  exit — a multi-minute calibration is not a hang.
+* The IMU task feeds the watchdog even while paused, so a calibration pause is
+  not mistaken for a stall.
+* The health check, `ServoControl::waitUntilIdle()` and the boot self-check feed
+  explicitly around/inside their blocking waits.
+
 ### 3.2 Snapshot handoff
 
 `ImuTelemetry` is written by the IMU task into `pendingTelemetry` and copied by
@@ -283,9 +324,11 @@ fitted radius for the boot self-check.
 > The LM thresholds in `ImuCalibration.cpp` are scaled accordingly — if you port
 > more PX4 calibration code, check the units first.
 
-### 4.4 Boot self-check — `checkCalibrationAtBoot()`
+### 4.4 Boot self-check — `verifyCalibration()`
 
-After a 5 s warm-up, if a stored calibration exists, 200 samples are checked:
+`AHRS::calibrate()` runs at boot and **never blocks on a human**. After a short
+bounded warm-up (2 s, watchdog-fed), if a stored calibration exists, 200 samples
+are checked:
 
 | Check | Limit |
 |---|---|
@@ -294,7 +337,10 @@ After a 5 s warm-up, if a stored calibration exists, 200 samples are checked:
 | `|mag|` vs stored field norm | ≤ 20 % |
 | temperature drift since calibration | ≤ 15 °C |
 
-Any failure triggers a full guided recalibration.
+On success the robot goes straight to normal operation (`CAL,SELF_CHECK,ok`).
+On failure — or when nothing is stored — it boots **uncalibrated**: the servos
+stay parked, the OLED shows `Uncalibrated - run CAL`, and `GET` reports `cal=0`.
+A full guided recalibration only runs when the operator sends `CAL`.
 
 ### 4.5 Storage
 
@@ -565,16 +611,22 @@ one `Serial.write`, so the visualizer never sees a half line.
 | `mag_fit` | 0 none / 1 sphere / 2 ellipsoid |
 | `est_init` | estimator initialized flag |
 
-### Serial console
+### Command protocol
 
-Send `q` to open the calibration menu (telemetry pauses):
+Serial (115200) and TCP (port 4242) share one line protocol; the full reference
+is [../PROTOCOL.md](../PROTOCOL.md).
 
 ```
-1 = gyro only      2 = accel only     3 = mag only     4 = all
-5 = status         6 = clear stored   0 = close menu
+CAL                 -> OK CAL sensors=all      (gyro + accel + mag)
+CAL gyro            -> gyro only
+CAL accel           -> accelerometer only
+CAL mag             -> magnetometer only
+GET                 -> OK SNAP,...             (attitude + servos, incl. cal=1/0)
+STREAM 50           -> OK stream=50            (telemetry at 50 Hz)
 ```
 
-During a calibration, `x` cancels and `?` prints help.
+During a calibration, `x` on serial cancels and `?` prints help. The former
+single-key menu (`q`, then `1`…`6`) has been removed.
 
 ---
 
@@ -649,7 +701,7 @@ pio run -e esp32-s3-devkitm-1
    `rollG/pitchG` start to drift away from `roll/pitch` (that gap is the
    estimator doing its job).
 5. **`ebx/eby/ebz`** should sit near zero. A persistent non-zero value means
-   the gyro calibration left a bias behind — rerun `1` from the menu.
+   the gyro calibration left a bias behind — rerun `CAL gyro`.
 
 ---
 
@@ -666,6 +718,9 @@ pio run -e esp32-s3-devkitm-1
 | Notch disabled by default | Enable at a fixed frequency | A crawler has no dominant vibration line; a mis-tuned notch would just add phase lag. |
 | Append-only CSV columns | Reorder / rename | Keeps both visualizers working across firmware revisions. |
 | `Preferences` blob per robot | One global blob | Eight robots share the firmware; each needs its own calibration. |
+| Shared-bus mutex (`lib/I2CBus`) | Separate I2C buses / no locking | The board has one bus; collisions corrupt sensor reads and are intermittent and hard to debug. |
+| `esp_task_wdt` with panic | Rely on the Arduino core default | The core starts the loop task unsubscribed, so a hang otherwise leaves the servos powered. |
+| Boot never waits for input | Prompt for the robot number on serial | An erased EEPROM used to hang the boot; now it defaults to 1 and `SETID` fixes it. |
 
 ---
 
@@ -695,7 +750,10 @@ pio run -e esp32-s3-devkitm-1
 | [`lib/IMU/ImuCalibration.h`](../../lib/IMU/ImuCalibration.h) / [`.cpp`](../../lib/IMU/ImuCalibration.cpp) | calibration model, six-position solve, LM mag fit, persistence |
 | [`lib/IMU/ImuRotation.h`](../../lib/IMU/ImuRotation.h) / [`.cpp`](../../lib/IMU/ImuRotation.cpp) | the frozen body→world rotation contract |
 | [`lib/IMU/AHRS.h`](../../lib/IMU/AHRS.h) / [`.cpp`](../../lib/IMU/AHRS.cpp) | orchestration: task, pipeline stages, calibration UI, ZUPT |
-| [`lib/IMU/ImuTelemetry.h`](../../lib/IMU/ImuTelemetry.h) / [`.cpp`](../../lib/IMU/ImuTelemetry.cpp) | CSV output |
-| [`include/config.h`](../../include/config.h) | pins, ranges, task core/priority/stack, deadband |
+| [`lib/IMU/ImuTelemetry.h`](../../lib/IMU/ImuTelemetry.h) / [`.cpp`](../../lib/IMU/ImuTelemetry.cpp) | CSV formatting (shared by serial and TCP streaming) |
+| [`lib/I2CBus/`](../../lib/I2CBus/I2CBus.h) | shared I2C mutex between OLED and IMU |
+| [`lib/SystemWatchdog/`](../../lib/SystemWatchdog/SystemWatchdog.h) | `esp_task_wdt` wrapper |
+| [`lib/CommandServer/`](../../lib/CommandServer/CommandServer.h) | serial + TCP command protocol |
+| [`include/config.h`](../../include/config.h) | pins, ranges, task core/priority/stack, deadband, I2C and watchdog settings |
 | [`test/host/`](../../test/host) | host test harness |
 | [`archive/imu-pre-px4/`](../../archive/imu-pre-px4) | the previous implementation, for reference |

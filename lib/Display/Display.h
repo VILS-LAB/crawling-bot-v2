@@ -6,6 +6,10 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 
+// Display and AHRS share the I2C bus, so every method that reaches the OLED
+// runs inside an i2c::Guard (see lib/I2CBus).
+#include <I2CBus.h>
+
 class Display
 {
 public:
@@ -28,6 +32,10 @@ private:
     Adafruit_SSD1306 *oled;
     uint8_t cursorX;
     uint8_t cursorY;
+    // False when the panel failed to initialise. Everything then becomes a
+    // no-op so a missing OLED cannot stop the robot from booting (the watchdog
+    // would otherwise turn the hang into a reboot loop).
+    bool ready;
 
     static const uint8_t SCREEN_WIDTH = 128;
     static const uint8_t SCREEN_HEIGHT = 64;

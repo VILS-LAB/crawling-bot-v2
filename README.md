@@ -1,157 +1,163 @@
-# Crawling Bot V2 - AI Learning Platform
+# Crawling Bot V2 — robot firmware
 
-[![PlatformIO](https://img.shields.io/badge/PlatformIO-ESP32-orange.svg)](https://platformio.org/)
-[![IUST](https://img.shields.io/badge/IUST-AI%20Course-blue.svg)](https://iust.ac.ir)
-[![VILS Lab](https://img.shields.io/badge/VILS-Lab%20Course-blue.svg)](https://vils-lab.github.io)
-[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+Stable firmware for the IUST AI-course crawling robot. The robot is a
+**self-contained service**: it owns the sensors, the servos, the display and the
+network, and it exposes everything a controller needs over one ASCII protocol on
+**USB serial and TCP**. Your learning algorithm runs wherever you like — on a
+laptop, in a notebook, in Python, C++, MATLAB, JavaScript — and talks to the
+robot over WiFi.
 
-> 🎓 **An intelligent crawling robot for IUST University's AI course**  
-> Students implement Reinforcement Learning algorithms to teach the robot autonomous movement.
+<!-- Photograph placeholder. Drop the assembled-robot photo at
+     docs/hardware/img/robot-overview.jpg, then uncomment the image tag that
+     used to be here (an alt-text + path markdown image). -->
 
-**📖 [مستندات فارسی (Persian Documentation)](README.fa.md)**
+> 📌 **This repository is firmware only.** It does not contain a reference
+> solution, an RL library or a course assignment. Those live with the course;
+> here you get a robot that boots reliably, stays calibrated, protects its
+> mechanics and answers commands deterministically.
 
-![Crawling Bot V2](docs/img/robot-overview.jpg)
+## What the robot gives you
 
-## Overview
+| Capability | Detail |
+|---|---|
+| State observation | 9-DOF attitude (roll/pitch/yaw), body acceleration, gyro, magnetic field, still/motion flag, velocity/position estimate |
+| Actions | two leg servos, each 0-180°, ramped and soft-limited |
+| Transport | USB serial (115200) and TCP `<robot-ip>:4242`, same protocol on both |
+| Discovery | the robot is a WiFi AP `ESP32-AP-<n>`, password `12345678` |
+| Feedback | 128×64 OLED, structured serial log, and a telemetry stream |
+| Recovery | hardware watchdog, non-blocking boot, over-the-air updates |
 
-A hands-on robotics platform where AI students apply **Reinforcement Learning** theory to real hardware. The robot features ESP32 microcontroller, 9-DOF motion sensors, servo actuators, and a modular software architecture designed for easy RL implementation.
+The whole interface is one text line protocol — no SDK, no generated stubs:
 
-**Key Features:**
+```text
+PING                      -> OK PONG 123456
+ID                        -> OK id=1 ssid=ESP32-AP-1 ip=192.168.4.1
+GET                       -> OK SNAP,id=1,t=51402,roll=1.24,pitch=-0.31,...
+STREAM 50                 -> OK stream=50        (live telemetry)
+ACT 120 60                -> OK ACT d=120 u=60   (move both legs)
+STOP | PARK               -> OK STOP | OK PARK
+CAL [all|gyro|accel|mag]  -> OK CAL sensors=all  (guided calibration)
+SETID 3                   -> OK id=3
+```
 
-- 🧠 Ready-to-code RL template in `lib/Training/`
-- 🎮 Full sensor suite for state observation (9-DOF AHRS)
-- 🔧 Two servo motors for action execution
-- 📡 WiFi + OTA for wireless development
-- 🖥️ OLED display for real-time feedback
+Full grammar, field meanings and error codes: **[docs/PROTOCOL.md](docs/PROTOCOL.md)**.
 
-**What Makes It Special:**
+## Quick start
 
-- Bridge theory to practice with real hardware
-- Modular libraries handle hardware complexity
-- Focus on RL algorithm implementation
-- Quick iteration with OTA updates
+```bash
+# 1. flash the robot (first time over USB, later over the air)
+pio run --target upload
 
-## For Students
+# 2. join the robot's WiFi: ESP32-AP-<n> / 12345678
 
-### Your 3-Phase Project Journey
+# 3. talk to it from Python (reference client, no dependencies)
+cd examples/python
+python hello_robot.py --host 192.168.4.1
+```
 
-**Phase 1: Hello Hardware** (Week 1)
+```text
+connected to tcp://192.168.4.1:4242
+uptime      : 51402 ms
+robot id    : 1 (ESP32-AP-1)
+attitude    : roll +1.24  pitch -0.31  yaw +97.05 deg
+legs        : down 180 (target 180), up 180 (target 180)
+```
 
-- Upload basic code and test all components
-- Make robot display "Hello World"
-- Implement simple "bye-bye" wave movement
-- ✅ Verify hardware works correctly
+From there: `walk_legs.py` sends actions, `stream_telemetry.py` logs frames,
+`calibrate.py` runs the guided calibration. See
+[examples/python/README.md](examples/python/README.md).
 
-**Phase 2: Build Your RL Algorithm** (Weeks 2)
+## Writing a client in your language
 
-- Design and code your RL algorithm (Q-Learning, SARSA, DQN, etc.)
-- Test algorithm logic separately
-- Define reward functions and state/action spaces
-- ✅ Algorithm ready for integration
+There is nothing to build or link. Open a socket to port 4242 (or the serial
+port at 115200 baud), write one command per line, read lines until you get the
+`OK`/`ERR` reply.
 
-**Phase 3: Train Your Robot** (Weeks 3-4)
+```python
+import socket
 
-- Integrate RL algorithm with robot hardware
-- Use sensor data for state observation
-- Control servos based on learned policy
-- ✅ Autonomous crawling achieved!
+s = socket.create_connection(("192.168.4.1", 4242), timeout=5)
+stream = s.makefile("r")            # ONE buffered reader for the session
 
-### What You'll Work With
+def command(text):
+    s.sendall(text.encode() + b"\n")
+    while True:
+        line = stream.readline().strip()
+        if line.startswith(("OK", "ERR")):
+            return line                 # this is the reply
+        # otherwise it is an IMU,/CAL, event line: keep reading
 
-**Sensors** (for state observation):
+print(command("GET"))
+print(command("ACT 120 60"))
+```
 
-- 9-DOF motion sensor (acceleration, rotation, orientation)
-- Real-time position and movement tracking
+Three rules cover almost every mistake:
 
-**Actuators** (for actions):
+1. **One reply per command.** `IMU,...` and `CAL,...` lines are events, not
+   replies; skip them while waiting.
+2. **Your socket may stall.** Never block the robot: enable streaming with
+   `STREAM <hz>` and drain it, or leave streaming off and poll `GET`.
+3. **Angles are clamped, not rejected.** `ACT` answers with the targets the
+   robot actually accepted.
 
-- 2 servo motors for leg control
-- Ramped, speed-limited movement with soft limits (see [SERVO_SAFETY.md](docs/SERVO_SAFETY.md))
+Language guides with runnable snippets live in [docs/languages/](docs/languages/README.md).
 
-**Your Code Goes Here:** `lib/Training/Training.cpp` - Ready-to-fill template for your RL implementation!
+## Repository layout
 
-> 📖 **See [EXAMPLES.md](docs/EXAMPLES.md) for RL code samples and [PROJECT_SUMMARY.md](docs/PROJECT_SUMMARY.md) for technical details**
-
-## Getting Started
-
-### Quick Setup (5 Minutes)
-
-1. **Install Tools**
-
-   - Install [VSCode](https://code.visualstudio.com/)
-   - Install [PlatformIO extension](https://platformio.org/install/ide?install=vscode)
-
-2. **Clone & Build**
-
-   ```bash
-   git clone https://github.com/amirali-lll/crawling-bot-v2.git
-   cd crawling-bot-v2
-   pio run --target upload
-   ```
-
-3. **Configure Robot**
-
-* Turn on the robot using the **On/Off switch located underneath the robot body**.
-* The robot will create a Wi-Fi access point named **ESP32-AP-{number}** (where `{number}` is your robot’s assigned ID).
-  Connect to the robot’s Wi-Fi network and enter **a number from 1 to 8 (12345678)** in the password field.
-* After your device is connected to the robot, **check again whether the previous upload attempt** using the command
-
-  ```bash
-  pio run --target upload
-  ```
-
-  was successful. If the upload did not complete successfully, **run the same command again** to program the robot.
-* If you have followed all the steps and see that the system is uploading and the upload finishes successfully, **congratulations! 🎉**
-  This means you are now connected to the robot and can upload and run the code you have written on it. 🙂
-  
-
-4. **Start Coding**
-   - Open `lib/Training/Training.cpp`
-   - Implement your RL algorithm
-   - Upload via OTA: Connect to robot WiFi → `pio run --target upload`
-
-> 📖 **Detailed setup guide:** [QUICKSTART.md](docs/QUICKSTART.md) | [BUILD.md](docs/BUILD.md)
+```text
+src/main.cpp            boot sequence and the main loop
+lib/
+  IMU/                  MPU9250 driver + PX4-ported attitude/calibration stack
+  ServoControl/         ramped, soft-limited servo driver
+  Display/              OLED driver
+  CommandServer/        the serial + TCP protocol
+  Network/              WiFi AP, OTA, robot identity
+  HealthCheck/          boot self-test for the servos
+  I2CBus/               shared-bus mutex (display + IMU)
+  SystemWatchdog/       hardware task watchdog
+include/config.h        pins, rates, limits, tuning
+test/host/              math + protocol tests that run on a PC
+tools/                  visualizers and log analysis
+examples/python/        reference client and runnable scripts
+docs/                   see below
+```
 
 ## Documentation
 
-| Document                                         | What's Inside                         |
-| ------------------------------------------------ | ------------------------------------- |
-| 📖 [QUICKSTART.md](docs/QUICKSTART.md)           | 5-minute setup guide                  |
-| 🔧 [BUILD.md](docs/BUILD.md)                     | Detailed build & deployment           |
-| 💻 [EXAMPLES.md](docs/EXAMPLES.md)               | RL code examples & snippets           |
-| 📊 [PROJECT_SUMMARY.md](docs/PROJECT_SUMMARY.md) | Full technical documentation          |
-| 🦿 [SERVO_SAFETY.md](docs/SERVO_SAFETY.md)       | **Ramped servo moves, soft limits, safe API** |
-| 🩺 [SERVO_HEALTH.md](docs/SERVO_HEALTH.md)       | Servo attach, health-check codes, boot order |
-| 🧭 [docs/imu/](docs/imu/README.md)               | **IMU/AHRS architecture, calibration, PX4 port map** |
-| 🕓 [IMPLEMENTATION_HISTORY.md](docs/imu/IMPLEMENTATION_HISTORY.md) | **IMU: current vs previous vs original `main`, and why each rewrite happened** |
-| 📈 [IMU_DEBUGGING.fa.md](docs/IMU_DEBUGGING.fa.md) | Live plots, 3D view, and IMU tests     |
-| 🔄 [MIGRATION.md](docs/MIGRATION.md)             | Arduino to PlatformIO migration notes |
+| Document | Read it when you want to… |
+|---|---|
+| **[docs/PROTOCOL.md](docs/PROTOCOL.md)** | implement a client: full command grammar, fields, errors |
+| [docs/QUICKSTART.md](docs/QUICKSTART.md) | flash the robot and send your first command |
+| [docs/BUILD.md](docs/BUILD.md) | build, flash, OTA, wiring, troubleshooting |
+| [docs/CALIBRATION.md](docs/CALIBRATION.md) | calibrate the IMU and fix failed calibrations |
+| [docs/HARDWARE.md](docs/HARDWARE.md) | wiring, pin map, power, 3D parts, PCB, bill of materials |
+| [docs/PROJECT.md](docs/PROJECT.md) | what this robot is for, project phases, who does what |
+| [docs/SERVO_SAFETY.md](docs/SERVO_SAFETY.md) | how the legs are protected |
+| [docs/SERVO_HEALTH.md](docs/SERVO_HEALTH.md) | interpret the boot servo self-test |
+| [docs/imu/](docs/imu/README.md) | the IMU/AHRS design in depth |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | firmware internals: tasks, buses, logging, failure modes |
+| [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | repo conventions, tests, release process |
+| [docs/MIGRATION.md](docs/MIGRATION.md) | history: Arduino → PlatformIO, student-code → client |
+| [docs/languages/](docs/languages/README.md) | client snippets per language |
 
-## Hardware & Architecture
+## Tests
 
-**Hardware:** ESP32-S3, MPU9250 (9-DOF), 2x Servos, OLED Display  
-**Software:** 5 modular libraries (Display, AHRS, ServoControl, Network, Training)  
-**Power:** 12V adapter
+```bash
+test/host/run.sh                        # C++ math + protocol, no hardware
+cd examples/python && python -m unittest discover -s tests   # client
+```
 
-The IMU/AHRS stack is a port of PX4's IMU path (filters, quaternion attitude
-estimator, calibration math) running in a dedicated task on core 1. See
-[docs/imu/ARCHITECTURE.md](docs/imu/ARCHITECTURE.md) for the full design and
-[docs/imu/CALIBRATION.md](docs/imu/CALIBRATION.md) for the calibration guide.
+## Hardware at a glance
 
-This is the third generation of the IMU stack. For what the previous two did,
-what was broken, and what changed, see
-[docs/imu/IMPLEMENTATION_HISTORY.md](docs/imu/IMPLEMENTATION_HISTORY.md).
+ESP32-S3-DevKitM-1 · MPU9250 9-DOF IMU · SSD1306 128×64 OLED · 2× hobby servo.
+Pins, power and mechanical parts: [docs/HARDWARE.md](docs/HARDWARE.md).
 
-> 📖 **Full specs:** See [PROJECT_SUMMARY.md](docs/PROJECT_SUMMARY.md#hardware) and [PROJECT_SUMMARY.md](docs/PROJECT_SUMMARY.md#architecture)
+## Status
 
-## Support & Contributing
-
-- **Questions?** Check [docs/](docs/) folder or open an [issue](https://github.com/amirali-lll/crawling-bot-v2/issues)
-- **Contributing:** PRs welcome! Focus on RL implementations, examples, and documentation
-- **Course:** IUST University - AI Course
+Firmware complete and stable; see [CHANGELOG.md](CHANGELOG.md).
+Mechanical files (3D print bodies, PCB, component spreadsheet) are tracked in
+[docs/hardware/](docs/hardware/README.md) and are being added incrementally.
 
 ---
 
-**🎓 Make Your Robot Crawl with AI! 🤖**
-
-_Designed for IUST AI students | MIT License | Built with PlatformIO_
+MIT License · Built with PlatformIO

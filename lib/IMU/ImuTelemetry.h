@@ -4,7 +4,7 @@
 #include <Arduino.h>
 #include "AHRS.h"
 
-// CSV telemetry for the IMU stack.
+// CSV formatter for the IMU stack.
 //
 // The column order is a contract with tools/imu_visualizer.py and
 // tools/imu_visualizer_v2.py. New columns are only ever APPENDED so an older
@@ -13,20 +13,19 @@
 //
 // A header line is printed at boot and then periodically, so the visualizers
 // can map columns by name instead of by position.
+//
+// Formatting is separate from transmission: the command server decides the rate
+// and writes the same line to USB serial and to any TCP client that asked for
+// STREAM.
 class ImuTelemetryOutput
 {
 public:
-    void begin();
-    void update(AHRS &ahrs);
-
     // Column names, in order, without the leading "IMU," prefix.
     static const char *headerLine();
 
-private:
-    void printHeader() const;
-    void printCsv(AHRS &ahrs) const;
-    uint32_t lastOutputMs = 0;
-    uint32_t lastHeaderMs = 0;
+    // Writes one "IMU,..." line (no trailing newline) into `out`.
+    // Returns the number of characters written, 0 on failure.
+    static int formatLine(AHRS &ahrs, char *out, size_t size);
 };
 
 #endif

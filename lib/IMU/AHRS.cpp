@@ -1,6 +1,9 @@
 #include "AHRS.h"
+#include <stdarg.h>
 #include "../../include/config.h"
 #include <Display.h>
+#include <I2CBus.h>
+#include <SystemWatchdog.h>
 
 namespace
 {
@@ -79,7 +82,10 @@ bool AHRS::begin(uint8_t requestedRobotNumber)
                       ? requestedRobotNumber
                       : 1;
 
-    Wire.begin();
+    // Display::begin() may already have started the bus; this is idempotent and
+    // also covers the case where the IMU comes up first.
+    if (!i2c::begin())
+        return false;
 
     MPU9250Setting setting;
     setting.accel_fs_sel = IMU_ACCEL_RANGE;
@@ -88,15 +94,27 @@ bool AHRS::begin(uint8_t requestedRobotNumber)
     setting.gyro_dlpf_cfg = GYRO_DLPF_CFG::DLPF_41HZ;
     setting.accel_dlpf_cfg = ACCEL_DLPF_CFG::DLPF_45HZ;
 
-    if (!mpu->setup(MPU9250_ADDRESS, setting))
-        return false;
+    {
+        i2c::Guard bus(I2C_LOCK_TIMEOUT_MS * 4);
+        if (!bus.locked())
+            return false;
+        if (!mpu->setup(MPU9250_ADDRESS, setting))
+            return false;
+    }
 
-    // The library ships its own Madgwick filter and its own mag calibration.
-    // Both are replaced by this stack, so switch them off to save CPU and to
-    // keep the raw magnetometer values available for our own calibration.
-    mpu->selectFilter(QuatFilterSel::NONE);
-    mpu->setMagBias(0.0f, 0.0f, 0.0f);
-    mpu->setMagScale(1.0f, 1.0f, 1.0f);
+    {
+        i2c::Guard bus(I2C_LOCK_TIMEOUT_MS);
+        if (!bus.locked())
+            return false;
+
+        // The library ships its own Madgwick filter and its own mag
+        // calibration. Both are replaced by this stack, so switch them off to
+        // save CPU and keep the raw magnetometer values available for our own
+        // calibration.
+        mpu->selectFilter(QuatFilterSel::NONE);
+        mpu->setMagBias(0.0f, 0.0f, 0.0f);
+        mpu->setMagScale(1.0f, 1.0f, 1.0f);
+    }
 
     initialized = true;
     lastSampleUs = micros();
@@ -165,13 +183,24 @@ void AHRS::stopTask()
 
 void AHRS::taskEntry(void *argument)
 {
+    // The IMU task is a second hang source: if it stops sampling the robot
+    // silently loses its state estimate, so it is watched too.
+    watchdog::addCurrentTask();
+
     static_cast<AHRS *>(argument)->taskLoop();
+
+    watchdog::removeCurrentTask();
+    vTaskDelete(nullptr);
 }
 
 void AHRS::taskLoop()
 {
     while (taskRunning)
     {
+        // Feed even while paused: a pause is requested by the loop task during
+        // calibration and must not look like a hang.
+        watchdog::feed();
+
         if (taskPaused)
         {
             // Keep the timestamp fresh so the first sample after a pause does
@@ -183,7 +212,7 @@ void AHRS::taskLoop()
         }
         taskPauseAck = false;
 
-        if (!mpu->update())
+        if (!updateSensor())
         {
             vTaskDelay(1);
             continue;
@@ -209,7 +238,17 @@ void AHRS::taskLoop()
     }
 
     taskExited = true;
-    vTaskDelete(nullptr);
+}
+
+// One locked sensor transaction. Only mpu->update() touches the bus; the
+// getters used below return values cached in the driver object, so the lock is
+// released before the estimator work to keep the hold time at one burst.
+bool AHRS::updateSensor()
+{
+    i2c::Guard bus(I2C_LOCK_TIMEOUT_MS * 2);
+    if (!bus.locked())
+        return false;
+    return mpu->update();
 }
 
 void AHRS::processSample(float dt)
@@ -584,50 +623,87 @@ bool AHRS::calibrate()
     if (!initialized)
         return false;
 
-    Serial.println("CAL,STARTUP,warmup_seconds=5");
-    showCalibrationScreen("Starting IMU", "Sensor warm-up", "Please wait...");
-    delay(5000);
+    calibrationValid = false;
 
-    if (calibrationLoaded && checkCalibrationAtBoot())
+    if (!calibrationLoaded)
+    {
+        Serial.println("CAL,NONE,robot_runs_uncalibrated_until_CAL");
+        return false;
+    }
+
+    // Sensor warm-up: the MPU9250 bias drifts for the first couple of seconds
+    // after power-on, and the self-check compares against the temperature the
+    // stored calibration was taken at. Bounded and watchdog-fed, so it is not a
+    // hang, but the robot does not stop here either: if the check fails it keeps
+    // booting uncalibrated.
+    showCalibrationScreen("Checking IMU", "Sensor warm-up", "Please wait...");
+    for (uint8_t i = 0; i < 20; ++i)
+    {
+        watchdog::feed();
+        delay(100);
+    }
+
+    if (calibrationComplete() && verifyCalibration())
     {
         Serial.println("CAL,SELF_CHECK,ok");
         showCalibrationScreen("Calibration OK", "Saved data is valid", "Starting robot...");
-        delay(700);
+        calibrationValid = true;
+        delay(400);
         return true;
     }
-    if (calibrationLoaded)
-        Serial.println("CAL,SELF_CHECK,recalibration_required");
 
-    showCalibrationScreen("Calibration needed", "Starting guided setup", "Follow the screen");
-    delay(1000);
+    if (!calibrationComplete())
+        Serial.println("CAL,SELF_CHECK,incomplete,run_CAL_all");
+    else
+        Serial.println("CAL,SELF_CHECK,failed,run_CAL");
+    showCalibrationScreen("Uncalibrated", "Run CAL to", "calibrate IMU");
+    delay(800);
+    return false;
+}
 
-    const bool calibrated = runCalibration(true, true, true);
-    if (!calibrated)
-    {
-        showCalibrationScreen("Calibration failed", "Robot is not ready", "Press q for menu");
-        delay(1500);
-    }
-    return calibrated;
+bool AHRS::runGuidedCalibration(bool gyro, bool accelerometer, bool magnetometer)
+{
+    // A guided run can take minutes of a human moving the robot around, so the
+    // loop task must not be treated as hung. The IMU task keeps feeding its own
+    // subscription (it is paused, and feeds while paused).
+    watchdog::Suspend suspendWatchdog;
+
+    calibrationValid = false;
+    const bool ok = runCalibration(gyro, accelerometer, magnetometer);
+    calibrationValid = ok && calibrationComplete();
+
+    if (!ok)
+        showCalibrationScreen("Calibration failed", "Robot is not ready", "Send CAL again");
+
+    return ok;
 }
 
 bool AHRS::runCalibration(bool gyro, bool accelerometer, bool magnetometer)
 {
     // The sampling task must not touch the sensor while we are calibrating.
     // Wait for it to acknowledge the pause so we never interleave an I2C
-    // transaction with a calibration read.
+    // transaction with a calibration read. If the task is not running (CAL is
+    // also valid before startTask()), leave the flag clear so a later start is
+    // not paused by a leftover request.
+    const bool hadTask = taskHandle != nullptr;
     taskPauseAck = false;
-    taskPaused = true;
-    for (int i = 0; i < 100 && !taskPauseAck; ++i)
-        delay(2);
+    taskPaused = hadTask;
+    if (hadTask)
+    {
+        for (int i = 0; i < 100 && !taskPauseAck; ++i)
+            delay(2);
+    }
 
     Serial.print("CAL,START,robot=");
     Serial.println(robotNumber);
+    reportProgress("CAL,START,robot=%u", static_cast<unsigned>(robotNumber));
 
     bool ok = true;
 
     if (gyro)
     {
         showCalibrationScreen("Gyro calibration", "Keep robot still", "Starting in 3 sec");
+        reportProgress("CAL,gyro,starting");
         delay(3000);
         Serial.println("CAL,gyro,keep_the_robot_completely_still");
         ok = calibrateGyroscope();
@@ -638,6 +714,7 @@ bool AHRS::runCalibration(bool gyro, bool accelerometer, bool magnetometer)
     if (ok && accelerometer)
     {
         Serial.println("CAL,accelerometer,guided_six_position");
+        reportProgress("CAL,accelerometer,starting");
         ok = calibrateAccelerometer();
         if (!ok)
             Serial.println("CAL,FAIL,accelerometer_calibration_rejected");
@@ -645,6 +722,7 @@ bool AHRS::runCalibration(bool gyro, bool accelerometer, bool magnetometer)
 
     if (ok && magnetometer)
     {
+        reportProgress("CAL,magnetometer,starting");
         ok = calibrateMagnetometer();
         if (!ok)
             Serial.println("CAL,FAIL,magnetometer_calibration_rejected");
@@ -666,6 +744,7 @@ bool AHRS::runCalibration(bool gyro, bool accelerometer, bool magnetometer)
         showCalibrationScreen("Calibration complete", "All sensor data saved", "Starting robot...");
         delay(1000);
         Serial.println("CAL,DONE");
+        reportProgress("CAL,DONE,saved=1");
     }
 
     // Force a fresh estimator seed with the new calibration.
@@ -697,9 +776,13 @@ bool AHRS::calibrateGyroscope()
 
         while (samples < GYRO_CAL_SAMPLES && millis() - started < 30000)
         {
+            // This runs on the loop task, whose watchdog subscription is
+            // suspended for the guided run; feeding is harmless and keeps the
+            // same code safe if it is ever reached outside a guided run.
+            watchdog::feed();
             if (consumeCalibrationControl())
                 return false;
-            if (!mpu->update())
+            if (!updateSensor())
             {
                 delay(2);
                 continue;
@@ -815,12 +898,13 @@ bool AHRS::calibrateAccelerometer()
 
         while (count < CAL_FACE_SAMPLES && millis() - phaseStarted < CAL_FACE_TIMEOUT_MS)
         {
+            watchdog::feed();
             if (consumeCalibrationControl())
             {
                 Serial.println("CAL,CANCELLED,accelerometer");
                 return false;
             }
-            if (!mpu->update())
+            if (!updateSensor())
             {
                 delay(2);
                 continue;
@@ -987,12 +1071,13 @@ bool AHRS::calibrateMagnetometer()
 
     while (millis() - started < MAG_CAL_DURATION_MS && count < MAG_CAL_MAX_SAMPLES)
     {
+        watchdog::feed();
         if (consumeCalibrationControl())
         {
             Serial.println("CAL,CANCELLED,magnetometer");
             return false;
         }
-        if (!mpu->update())
+        if (!updateSensor())
         {
             delay(2);
             continue;
@@ -1101,7 +1186,13 @@ bool AHRS::calibrateMagnetometer()
     return true;
 }
 
-bool AHRS::checkCalibrationAtBoot()
+bool AHRS::calibrationComplete() const
+{
+    return calibration.accelSides == imu::kAccelCalibrationSides &&
+           calibration.magFitKind != 0;
+}
+
+bool AHRS::verifyCalibration()
 {
     float accelNormSum = 0.0f;
     float gyroNormSum = 0.0f;
@@ -1110,7 +1201,11 @@ bool AHRS::checkCalibrationAtBoot()
 
     for (uint16_t i = 0; i < CHECK_SAMPLES; ++i)
     {
-        if (!mpu->update())
+        // This runs on the loop task during boot, so keep it fed and give up
+        // the bus between samples instead of holding it for the whole window.
+        watchdog::feed();
+
+        if (!updateSensor())
         {
             delay(2);
             continue;
@@ -1198,6 +1293,7 @@ void AHRS::clearStoredCalibration()
 {
     const bool removed = imu::ImuCalibrationStore::clear(robotNumber);
     calibrationLoaded = false;
+    calibrationValid = false;
     Serial.println(removed ? "IMU,CLEAR,done" : "IMU,CLEAR,nothing_to_remove");
 }
 
@@ -1213,7 +1309,10 @@ bool AHRS::consumeCalibrationControl()
             Serial.println("CAL,HELP,send x to cancel; keep still or move slowly as requested");
     }
     if (cancelled)
+    {
         Serial.println("CAL,CANCELLED,user");
+        reportProgress("CAL,CANCELLED,user");
+    }
     return cancelled;
 }
 
@@ -1232,99 +1331,18 @@ void AHRS::showCalibrationScreen(const char *title, const char *line1, const cha
     statusDisplay->refresh();
 }
 
-void AHRS::printCalibrationMenu() const
+void AHRS::reportProgress(const char *format, ...)
 {
-    Serial.println();
-    Serial.println(
-        "IMU MENU: 1=gyro 2=accel 3=mag 4=all 5=status 6=clear 0=close");
-}
+    if (progressSink == nullptr)
+        return;
 
-void AHRS::printCalibrationStatus() const
-{
-    Serial.print("IMU,STATUS,robot=");
-    Serial.print(robotNumber);
-    Serial.print(",saved=");
-    Serial.print(calibrationLoaded ? 1 : 0);
-    Serial.print(",acc_norm_g=");
-    Serial.print(telemetry.accelNormG, 4);
-    Serial.print(",gyro_norm_dps=");
-    Serial.print(sqrtf(telemetry.gyro[0] * telemetry.gyro[0] +
-                       telemetry.gyro[1] * telemetry.gyro[1] +
-                       telemetry.gyro[2] * telemetry.gyro[2]),
-                 4);
-    Serial.print(",mag_norm_ut=");
-    Serial.print(telemetry.magNorm, 3);
-    Serial.print(",still=");
-    Serial.print(telemetry.still ? 1 : 0);
-    Serial.print(",stdA=");
-    Serial.print(telemetry.stdA, 5);
-    Serial.print(",trust=");
-    Serial.print(telemetry.trust, 3);
-    Serial.print(",rate_hz=");
-    Serial.print(telemetry.imuRateHz, 1);
-    Serial.print(",accel_rms_g=");
-    Serial.print(telemetry.accelCalRms, 5);
-    Serial.print(",mag_rms_ut=");
-    Serial.print(telemetry.magCalRms, 4);
-    Serial.print(",mag_fit=");
-    Serial.println(telemetry.magFitKind);
-}
+    char line[96];
+    va_list args;
+    va_start(args, format);
+    vsnprintf(line, sizeof(line), format, args);
+    va_end(args);
 
-void AHRS::serviceConsole()
-{
-    static bool menuOpen = false;
-    while (Serial.available())
-    {
-        const char character = static_cast<char>(Serial.read());
-        if (!menuOpen && (character == 'q' || character == 'Q'))
-        {
-            menuOpen = true;
-            serialTelemetryEnabled = false;
-            printCalibrationMenu();
-            continue;
-        }
-        if (!menuOpen)
-            continue;
-
-        if (character == '0')
-        {
-            menuOpen = false;
-            serialTelemetryEnabled = true;
-            Serial.println("IMU MENU:CLOSED,stream=on");
-        }
-        else if (character == '1')
-        {
-            menuOpen = false;
-            runCalibration(true, false, false);
-            serialTelemetryEnabled = true;
-        }
-        else if (character == '2')
-        {
-            menuOpen = false;
-            runCalibration(false, true, false);
-            serialTelemetryEnabled = true;
-        }
-        else if (character == '3')
-        {
-            menuOpen = false;
-            runCalibration(false, false, true);
-            serialTelemetryEnabled = true;
-        }
-        else if (character == '4')
-        {
-            menuOpen = false;
-            runCalibration(true, true, true);
-            serialTelemetryEnabled = true;
-        }
-        else if (character == '5')
-        {
-            printCalibrationStatus();
-        }
-        else if (character == '6')
-        {
-            clearStoredCalibration();
-        }
-    }
+    progressSink(line, progressContext);
 }
 
 void AHRS::resetPosition()

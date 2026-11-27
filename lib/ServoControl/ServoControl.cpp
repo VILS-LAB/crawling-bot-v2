@@ -1,4 +1,5 @@
 #include "ServoControl.h"
+#include <SystemWatchdog.h>
 #include "../../include/config.h"
 
 #include <math.h>
@@ -221,6 +222,9 @@ bool ServoControl::waitUntilIdle(uint32_t timeoutMs)
     while (isMoving())
     {
         update();
+        // This spins on the loop task, which is watched by the hardware
+        // watchdog: a long move must not look like a hang.
+        watchdog::feed();
         if (millis() - start >= timeoutMs)
             return false;
         delay(1);

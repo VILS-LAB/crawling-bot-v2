@@ -15,3 +15,7 @@ test/host/build/
 # python caches
 __pycache__/
 *.pyc
+
+# example client artifacts
+examples/python/**/__pycache__/
+*.pyc

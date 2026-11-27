@@ -1,205 +1,85 @@
-# Crawling Bot V2 - Project Summary
+# Technical summary
 
-## Project Overview
+One screen of orientation. Every statement here is expanded — and is
+authoritative — in the linked document.
 
-This project is a complete migration of a crawling robot from Arduino to PlatformIO, featuring:
-- Clean, modular, library-based architecture
-- OLED display instead of LCD
-- MPU9250 AHRS (9-DOF IMU) instead of ultrasonic sensor
-- Full support for reinforcement learning (template ready)
+## What this repository is
 
-## Key Features
+**Robot firmware.** The robot runs it; student controllers run elsewhere and
+connect over the network. Nothing in a student's project is compiled into the
+firmware.
 
-### ✅ Completed
-- **Modular Architecture**: 5 separate libraries with clear responsibilities
-- **OLED Display**: 128x64 pixel display with graphics support
-- **9-DOF AHRS**: Full inertial measurement with MPU9250
-- **Servo Control**: Smooth movement and position tracking
-- **WiFi & OTA**: Wireless updates with progress display
-- **Health Checks**: Automated system verification on startup
-- **Comprehensive Documentation**: 6 markdown files covering all aspects
+| Question | Answer | Details |
+|---|---|---|
+| How do I control the robot? | ASCII lines on serial or TCP `:4242` | [PROTOCOL.md](PROTOCOL.md) |
+| How do I write a client? | any language; Python reference included | [languages/](languages/README.md), [examples/python](../examples/python/README.md) |
+| What is the robot made of? | ESP32-S3, MPU9250, SSD1306 OLED, 2 servos | [HARDWARE.md](HARDWARE.md) |
+| How is the firmware built? | PlatformIO, modular libraries | [ARCHITECTURE.md](ARCHITECTURE.md) |
+| What is the course structure? | setup → interface → agent → training → evaluation | [PROJECT.md](PROJECT.md) |
+| How is the IMU implemented? | PX4-derived filters, estimator, calibration | [imu/](imu/README.md) |
 
-### 🔄 Template Ready
-- **Training Module**: Interface ready for reinforcement learning implementation
+## Features
 
-## File Structure
+| Area | Capability |
+|---|---|
+| Sensing | 200 Hz IMU task: calibrated accel/gyro/mag, quaternion attitude, still detection, velocity/position estimate |
+| Actuation | two servos, ramped motion, soft limits, motion health check |
+| Interface | 9 commands over serial + TCP, one reply each, non-blocking I/O |
+| Telemetry | 50-column CSV stream at up to 50 Hz, append-only format |
+| Calibration | guided 3-stage procedure, stored per robot in NVS, verified at boot |
+| Reliability | hardware watchdog, non-blocking boot, shared-bus mutex, OTA |
+| Observability | OLED pages, structured `WARN,`/`ERROR,`/`PROTOCOL,` log lines |
 
-```
-crawling-bot-v2/
-├── src/
-│   └── main.cpp                 # Main application
-├── lib/
-│   ├── Display/                 # OLED display library
-│   ├── AHRS/                    # MPU9250 sensor library
-│   ├── ServoControl/            # Servo motor control
-│   ├── Network/                 # WiFi AP and OTA
-│   └── Training/                # RL training (template)
-├── include/
-│   └── config.h                 # Pin and system configuration
-├── archive/
-│   └── old-template.ino         # Original Arduino code
-├── platformio.ini               # PlatformIO configuration
-├── README.md                    # Main documentation
-├── QUICKSTART.md                # Quick start guide
-├── BUILD.md                     # Build instructions
-├── MIGRATION.md                 # Migration guide
-├── EXAMPLES.md                  # Code examples
-└── PROJECT_SUMMARY.md           # This file
-```
+## Library map
 
-## Libraries
+| Library | Responsibility | Depends on |
+|---|---|---|
+| `IMU` | MPU9250, filters, estimator, calibration | `I2CBus` |
+| `ServoControl` | PWM, motion profile, limits, self-test | — |
+| `Display` | SSD1306 drawing | `I2CBus` |
+| `Network` | WiFi AP, OTA, robot identity (EEPROM) | — |
+| `CommandServer` | protocol parsing, serial/TCP transports, streaming | all of the above |
+| `HealthCheck` | boot servo verification | `ServoControl`, `IMU` |
+| `I2CBus` | recursive mutex + bus bring-up | — |
+| `SystemWatchdog` | `esp_task_wdt` subscription and feeding | — |
 
-### 1. Display Library
-- OLED SSD1306 driver wrapper
-- Text rendering at any position
-- Progress bars for OTA
-- Simple API for common operations
+`src/main.cpp` wires them together and owns the boot order and the screen.
 
-### 2. AHRS Library
-- MPU9250 9-DOF sensor integration
-- Accelerometer, gyroscope, magnetometer
-- Orientation (roll, pitch, yaw)
-- Quaternion representation
-- Motion detection
-- Displacement tracking
-- Temperature sensing
-- Calibration support
+## Numbers worth knowing
 
-### 3. ServoControl Library
-- Control 2 servo motors
-- **Every move is ramped** (trapezoidal profile): no instant jumps, no overshoot
-- **Soft limits** clamp every target and every profile step
-- **Position tracking**: a new target always starts from the real position
-- Non-blocking `moveDownTo()` / `moveUpTo()` + `update()`, or blocking helpers
-- Runtime tuning: `setSpeed()`, `setAccel()`, `setDownLimits()`, `setUpLimits()`
-- Preset positions (initial, test)
-- See [SERVO_SAFETY.md](SERVO_SAFETY.md)
+| Setting | Value | Where |
+|---|---|---|
+| IMU sample rate | 200 Hz, core 1 | `IMU_TASK_*` in `config.h` |
+| Telemetry rate | 10 Hz serial default, ≤ 50 Hz | `STREAM`, `PROTOCOL_MAX_STREAM_HZ` |
+| Servo cruise / accel | 180 °/s, 600 °/s² | `SERVO_MAX_SPEED_DPS`, `SERVO_ACCEL_DPS2` |
+| Watchdog | 3 s, panic + reset | `WATCHDOG_TIMEOUT_S` |
+| I2C bus | 400 kHz, shared | `I2C_CLOCK_HZ` |
+| TCP clients | 4 | `PROTOCOL_MAX_CLIENTS` |
+| Line length | 96 bytes | `PROTOCOL_LINE_MAX` |
 
-### 4. Network Library
-- WiFi Access Point setup
-- Robot-specific SSID (ESP32-AP-{number})
-- OTA update handling
-- Robot number management (EEPROM)
-- FreeRTOS task for async OTA
-- Display integration for status
+## Requirements
 
-### 5. Training Library
-- Template for RL implementation
-- Interfaces for training/learning
-- Model save/load placeholders
-- Ready for your algorithm
+**Hardware** — ESP32-S3-DevKitM-1, MPU9250 (GY-91) at `0x68`, SSD1306 128×64 at
+`0x3C`, 2 hobby servos on GPIO 6/7, external 5 V for the servos.
 
-## Hardware Requirements
+**Software** — PlatformIO; Python 3.8+ for the example client; a C++ compiler
+for the host tests.
 
-- **MCU**: ESP32-S3-DevKitM-1
-- **Display**: OLED 0.96" SSD1306 (I2C, 0x3C)
-- **IMU**: MPU9250 (I2C, 0x68)
-- **Actuators**: 2x Servo Motors (GPIO 32, 33)
-- **Power**: USB-C + external 5V for servos
+## Getting started
 
-## Software Requirements
+1. `pio run --target upload`
+2. join `ESP32-AP-<n>` (password `12345678`)
+3. `python examples/python/hello_robot.py --host 192.168.4.1`
+4. if it reports `calibrated: False`, run `python calibrate.py`
 
-- PlatformIO Core or IDE
-- Python 3.x (for PlatformIO)
-- USB drivers (CH340/CP2102)
+## Testing
 
-## Key Improvements Over Old Code
+| Suite | Command | Covers |
+|---|---|---|
+| C++ host tests | `test/host/run.sh` | IMU math, filters, estimator, calibration fits, motion profile, protocol grammar |
+| Python client tests | `python -m unittest discover -s examples/python/tests` | parsing, every client method, error and timeout paths |
 
-| Aspect | Old | New |
-|--------|-----|-----|
-| Architecture | Monolithic | Modular libraries |
-| Display | LCD 16x2 | OLED 128x64 |
-| Sensing | Ultrasonic | 9-DOF AHRS |
-| Build System | Arduino IDE | PlatformIO |
-| Dependencies | Manual | Automatic |
-| Code Organization | Single file | Separate libraries |
-| Extensibility | Limited | High |
+## Status
 
-## Documentation
-
-### For Users
-- **QUICKSTART.md**: Get started in 5 minutes
-- **BUILD.md**: Detailed build and deploy instructions
-- **README.md**: Complete project overview
-
-### For Developers
-- **MIGRATION.md**: Porting guide from old code
-- **EXAMPLES.md**: Code snippets and usage patterns
-- Library source code with inline comments
-
-## Getting Started
-
-1. **Hardware**: Wire up OLED, MPU9250, and servos
-2. **Software**: Clone repo, install PlatformIO
-3. **Build**: `pio run`
-4. **Upload**: `pio run --target upload`
-5. **Configure**: Set robot number via serial (1-8)
-6. **Test**: Watch health check on OLED display
-
-## Future Development
-
-The Training library is ready for implementation:
-- Reinforcement Learning algorithms
-- Neural network integration
-- Behavior training and execution
-- Model persistence
-
-## Code Quality
-
-- ✅ Clean separation of concerns
-- ✅ Object-oriented design
-- ✅ Consistent naming conventions
-- ✅ Header guards and includes
-- ✅ Default parameter values
-- ✅ Error handling
-- ✅ Serial debug output
-- ✅ Documented APIs
-
-## Testing Strategy
-
-Due to hardware requirements, testing should be done locally:
-1. Compile verification (syntax check)
-2. Unit testing of individual libraries
-3. Integration testing with hardware
-4. System-level validation
-
-## Maintenance Notes
-
-- Keep libraries independent
-- Update dependencies in platformio.ini
-- Test changes on hardware before committing
-- Document API changes
-- Follow existing code style
-
-## Contributing
-
-When adding new features:
-1. Create a new library if it's a major feature
-2. Keep libraries focused and single-purpose
-3. Update relevant documentation
-4. Add examples to EXAMPLES.md
-5. Test on actual hardware
-
-## License
-
-[Specify your license]
-
-## Credits
-
-- Original Arduino code: amirali-lll
-- PlatformIO migration: GitHub Copilot
-- Libraries used: Adafruit, hideakitai, madhephaestus
-
-## Support
-
-For issues or questions:
-- Check documentation files
-- Review example code
-- Examine library source code
-- Open GitHub issue
-
----
-
-**Status**: ✅ Migration Complete - Ready for Hardware Testing
-**Version**: 2.0
-**Last Updated**: 2025-12-09
+Firmware feature-complete. See [CHANGELOG.md](../CHANGELOG.md). Mechanical and
+electrical sources are being added under [hardware/](hardware/README.md).

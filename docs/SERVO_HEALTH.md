@@ -12,15 +12,22 @@ reading the OLED.
 ## Order of operations at boot
 
 ```
-attach servos  ->  IMU calibration  ->  servo health check  ->  Ready
+attach servos  ->  verify stored calibration  ->  servo health check  ->  Ready
+                   (guided CAL only when you ask for it)
 ```
+
+Boot never blocks on a human: it only *verifies* the stored calibration. If the
+check fails (or nothing is stored), the robot skips the health check — the
+servos stay parked — and the OLED shows `Uncalibrated - run CAL`. Send `CAL`
+over serial or TCP to run the guided procedure; the full health check then runs
+on the next boot with a valid calibration.
 
 The health check runs **after** calibration, on purpose:
 
 | Step | Why it must be here |
 |---|---|
 | `servos.begin()` | attach the PWM channels and park the legs at the initial angle *before* calibration, so the robot is already in its final, still pose when the gyro/accel calibration starts |
-| `ahrs.calibrate()` | needs the robot completely still: the gyro bias check rejects any motion, and the six-position accelerometer fit needs a stationary frame |
+| `ahrs.calibrate()` | verifies the stored calibration and needs the robot completely still while doing so; the guided `CAL` (gyro bias, six-position accel fit) additionally requires a stationary frame |
 | `healthCheck.run()` | **moves the servos on purpose**. Doing this before calibration would inject rotation into the gyro bias, add noise to the accelerometer fit, and could make the calibration fail or silently learn a bad bias |
 
 So: **attach before calibration, test after calibration.** Never test the servos
@@ -80,16 +87,17 @@ placed after `ahrs.startTask()`.
 ## Pin note for the ESP32-S3
 
 `ESP32Servo` 0.13.0 compiles with `ENFORCE_PINS` and, on the S3, only accepts
-PWM on **GPIO 1–21, 35–45, 47, 48**. `SERVO_PIN_DOWN 32` / `SERVO_PIN_UP 33`
-are valid on a classic ESP32 but **not** on the S3 with this library version, so
-`attach()` returns 0 and you get code 1 (`ATTACH_FAILED`) for both servos.
+PWM on **GPIO 1–21, 35–45, 47, 48**. GPIO 32/33 — named by older course
+material — are valid on a classic ESP32 but **not** on the S3 with this library
+version, so `attach()` returns 0 and you get code 1 (`ATTACH_FAILED`) for both
+servos.
 
-Two ways out:
+The firmware uses **GPIO 6 and 7**, which are inside the allowed range, so the
+default build is unaffected. If you rewire the servos:
 
-* Move the signal wires to S3 PWM-capable pins (for example GPIO 38 and 39) and
-  update `SERVO_PIN_DOWN` / `SERVO_PIN_UP` in
-  [include/config.h](../include/config.h), or
-* Upgrade `madhephaestus/ESP32Servo` to `^3.2.1`, which uses the newer
+* stay inside the allowed range and update `SERVO_PIN_DOWN` / `SERVO_PIN_UP`
+  in [include/config.h](../include/config.h), or
+* upgrade `madhephaestus/ESP32Servo` to `^3.2.1`, which uses the newer
   Arduino-ESP32 LEDC API that does not keep that whitelist.
 
 Either way the health check reports the truth instead of failing silently.

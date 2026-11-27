@@ -3,7 +3,7 @@
 
 namespace
 {
-// Keep this in sync with printCsv(). Appended columns go at the end.
+// Keep this in sync with formatLine(). Appended columns go at the end.
 constexpr const char *kHeader =
     "IMU,t_ms,dt,ax,ay,az,lax,lay,laz,flax,flay,flaz,gx,gy,gz,gbx,gby,gbz,"
     "fgx,fgy,fgz,magx,magy,magz,roll,pitch,yaw,vx,vy,vz,px,py,pz,temp_c,"
@@ -11,8 +11,6 @@ constexpr const char *kHeader =
     // --- appended in the PX4-based stack ---
     "ebx,eby,ebz,acc_norm_g,mag_norm,rate_hz,accel_rms_g,mag_rms_ut,mag_fit,"
     "est_init";
-
-constexpr uint32_t kHeaderRepeatMs = 5000;
 } // namespace
 
 const char *ImuTelemetryOutput::headerLine()
@@ -20,49 +18,17 @@ const char *ImuTelemetryOutput::headerLine()
     return kHeader;
 }
 
-void ImuTelemetryOutput::begin()
+int ImuTelemetryOutput::formatLine(AHRS &ahrs, char *out, size_t size)
 {
-    printHeader();
-    lastOutputMs = millis();
-    lastHeaderMs = lastOutputMs;
-}
+    if (out == nullptr || size == 0)
+        return 0;
 
-void ImuTelemetryOutput::update(AHRS &ahrs)
-{
-    if (!ahrs.isSerialTelemetryEnabled())
-        return;
-
-    const uint32_t now = millis();
-
-    // Re-emit the header periodically so a visualizer attached later can still
-    // learn the column layout.
-    if (now - lastHeaderMs >= kHeaderRepeatMs)
-    {
-        lastHeaderMs = now;
-        printHeader();
-    }
-
-    if (now - lastOutputMs < TELEMETRY_INTERVAL_MS)
-        return;
-
-    lastOutputMs = now;
-    printCsv(ahrs);
-}
-
-void ImuTelemetryOutput::printHeader() const
-{
-    Serial.println(kHeader);
-}
-
-void ImuTelemetryOutput::printCsv(AHRS &ahrs) const
-{
     const ImuTelemetry &imu = ahrs.getTelemetry();
 
-    // One buffer, one write: keeps the line atomic so the visualizer never sees
-    // a half line, and avoids ~50 individual Serial.print() calls per sample.
-    char line[512];
-    int length = snprintf(
-        line, sizeof(line),
+    // One buffer, one write: keeps the line atomic so a client never sees half
+    // a line, and avoids ~50 individual Serial.print() calls per sample.
+    const int length = snprintf(
+        out, size,
         "IMU,%lu,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,"
         "%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,"
         "%.2f,%.2f,%.2f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.2f,%d,%d,%u,"
@@ -91,10 +57,8 @@ void ImuTelemetryOutput::printCsv(AHRS &ahrs) const
         static_cast<unsigned>(imu.estimatorInitialized));
 
     if (length <= 0)
-        return;
-    if (length >= static_cast<int>(sizeof(line)))
-        length = static_cast<int>(sizeof(line)) - 1;
-
-    line[length++] = '\n';
-    Serial.write(reinterpret_cast<const uint8_t *>(line), length);
+        return 0;
+    if (length >= static_cast<int>(size))
+        return static_cast<int>(size) - 1;
+    return length;
 }

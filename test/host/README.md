@@ -22,6 +22,7 @@ test/host/run.sh
 | still detection | constant 1.025 g acceleration, zero gyro and low noise become still using the 40-sample mean |
 | end-to-end tracking | yaw tracked against a synthetic ground truth |
 | servo motion profile | lands exactly on target, respects speed/accel limits, no overshoot, continuous retarget, soft limits, degenerate dt/config |
+| command protocol parser | verb recognition, case-insensitivity, whitespace, unknown verbs, argument splitting, integer parsing, stream-rate clamping |
 
 ## Why this exists
 
@@ -39,6 +40,7 @@ lib/IMU/ImuAttitudeEstimator.cpp
 lib/IMU/ImuCalibration.cpp
 lib/IMU/ImuRotation.cpp
 lib/ServoControl/ServoMotion.cpp
+lib/CommandServer/CommandParser.cpp
 ```
 
 `ImuCalibration.cpp` guards its `Preferences` persistence behind

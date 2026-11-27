@@ -1,76 +1,54 @@
-# IMU calibration guide
+# IMU calibration: the math and the fits
 
-Practical guide for calibrating the MPU9250 on the GY-91. For the *why* behind
-each step, see [ARCHITECTURE.md §4](./ARCHITECTURE.md#4-calibration).
+How the calibration model works and what each stage computes. For the
+**procedure** (when to calibrate, how to run it, what a failure means) see
+[../CALIBRATION.md](../CALIBRATION.md). For the *why* behind each step in the
+pipeline, see [ARCHITECTURE.md §4](./ARCHITECTURE.md#4-calibration).
 
-## When to calibrate
-
-* First boot of a new board.
-* After moving the IMU, changing its mounting, or re-soldering.
-* When the boot self-check fails (`CAL,SELF_CHECK,recalibration_required`).
-* When `ebx/eby/ebz` in telemetry sit persistently away from zero.
-* When `mag_rms_ut` is above ~2 µT.
-
-## Opening the menu
-
-Send `q` over the serial console (115200 baud). Telemetry pauses and the menu
-prints:
+## What the model is
 
 ```
-IMU MENU: 1=gyro 2=accel 3=mag 4=all 5=status 6=clear 0=close
+accel_corrected = accelMatrix * (accel_raw - accelBias)   full 3x3, units of g
+gyro_corrected  = gyro_raw - gyroBias                     deg/s
+mag_corrected   = magMatrix * (mag_raw - magOffset)       uT
 ```
 
-| Key | Action |
-|---|---|
-| `1` | gyro only |
-| `2` | accelerometer only |
-| `3` | magnetometer only |
-| `4` | all three (recommended) |
-| `5` | print status |
-| `6` | erase the stored calibration |
-| `0` | close the menu, resume telemetry |
+PX4 throws away the off-diagonal accelerometer terms; this project keeps them
+because the GY-91 breakout is hand-soldered and its axes are not perfectly
+orthogonal.
 
-During any calibration, `x` cancels and `?` prints help.
+## Gyro: mean over a still window
 
-## Gyro
+The stage settles for 1.5 s, then collects up to 2500 samples while the robot is
+still. Success prints `CAL,gyro,bias=x,y,z`.
 
-1. Put the robot on a solid surface.
-2. Press `1` (or `4`).
-3. **Do not touch it** for the 1.5 s settle plus the ~12 s collection.
-4. Success prints `CAL,gyro,bias=x,y,z`.
-
-If it prints `CAL,gyro,motion_detected_retrying`, something moved. It retries up
-to 5 times, then fails.
-
-The check is PX4's: per-axis standard deviation must be ≤ 0.20 °/s **and** the
+The acceptance check is PX4's: per-axis standard deviation must be ≤ 0.20 °/s **and** the
 median must be within 0.6 °/s of the mean. The median check catches a slow,
 steady rotation that a variance test alone would miss.
 
-## Accelerometer
+## Accelerometer: six-position solve
 
-Six guided positions. For each one the firmware waits until the orientation is
-correct before it starts collecting, and the OLED tells you what it wants.
+Six orientations, one per face. For each, the firmware waits until the
+orientation is correct before collecting.
 
-| Step | OLED says | Meaning |
+| Step | Face up | Reference vector |
 |---|---|---|
-| 1 | `Put X+ up` | robot nose pointing up |
-| 2 | `Put X- up` | robot nose pointing down |
-| 3 | `Put Y+ up` | robot left side down |
-| 4 | `Put Y- up` | robot right side down |
-| 5 | `Put Z+ up` | robot upside down |
-| 6 | `Put Z- up` | robot right side up (normal) |
+| 1 | X+ (nose up) | ( g, 0, 0) |
+| 2 | X- (nose down) | (-g, 0, 0) |
+| 3 | Y+ (left down) | ( 0, g, 0) |
+| 4 | Y- (right down) | ( 0,-g, 0) |
+| 5 | Z+ (upside down) | ( 0, 0, g) |
+| 6 | Z- (upright) | ( 0, 0,-g) |
 
-For each position:
+Acceptance per position:
 
 * hold it **still** — `|gyro|` must stay under 3 °/s,
 * the dominant axis must match and have the right sign,
 * `|accel|` must be within 0.85–1.15 g,
 * 180 samples are averaged.
 
-If the OLED shows `Wrong position`, it also shows what it currently sees
-(`Current: Z+`) and what it needs (`Need: X+`).
-
-Success prints the bias, the full 3×3 matrix, and the residual:
+The six averaged vectors are then solved for `accelBias` and an `accelMatrix`.
+Success prints both plus the residual:
 
 ```
 CAL,accelerometer,bias=...
@@ -81,12 +59,11 @@ CAL,accelerometer,rms_g=0.00412
 `rms_g` below ~0.02 g is good. Higher means the robot moved during a step or
 the mounting is loose.
 
-## Magnetometer
+## Magnetometer: sphere then ellipsoid
 
-1. Press `3` (or `4`).
-2. **Rotate the robot slowly through all orientations** for 20 s — figure
-   eights, all three axes, no fast spins.
-3. Keep it away from metal, magnets, speakers and powered wires.
+A 20 s rotating sample cloud is fitted with Levenberg-Marquardt — a sphere
+first, then an ellipsoid seeded from the sphere result. Samples are prompted
+apart by at least 3 µT so one orientation cannot dominate the fit.
 
 Success prints:
 
@@ -107,46 +84,42 @@ CAL,magnetometer,fit=ellipsoid
 
 ## Verifying
 
-Press `5` for status:
+Use `GET` (or the Python client's `snapshot()`):
 
+```text
+GET
+OK SNAP,id=1,...,cal=1,d=180,dt=180,u=180,ut=180,act_moving=0
 ```
-IMU,STATUS,robot=1,saved=1,acc_norm_g=1.0002,gyro_norm_dps=0.031,
-mag_norm_ut=47.2,still=1,stdA=0.00120,trust=1.000,rate_hz=199.8,
-accel_rms_g=0.00412,mag_rms_ut=0.83,mag_fit=2
-```
 
-| Field | Good value |
-|---|---|
-| `acc_norm_g` | 0.99–1.01 |
-| `gyro_norm_dps` | < 0.1 |
-| `mag_norm_ut` | 25–65 |
-| `rate_hz` | ~200 |
-| `accel_rms_g` | < 0.02 |
-| `mag_rms_ut` | < 2 |
+The telemetry stream carries the residuals:
 
-Then close the menu (`0`) and check the live telemetry:
+| Field | Good value | Meaning |
+|---|---|---|
+| `acc_norm_g` | 0.99–1.01 | accelerometer magnitude after correction |
+| `gyro_norm_dps` | < 0.1 | residual rate, bias removed |
+| `mag_norm` | 25–65 µT | local field magnitude |
+| `rate_hz` | ~200 | measured IMU sampling rate |
+| `accel_rms_g` | < 0.02 | six-position fit residual |
+| `mag_rms_ut` | < 2 | sphere/ellipsoid fit residual |
+| `mag_fit` | 1 or 2 | 1 = sphere, 2 = ellipsoid |
+
+Behavioural check, with live telemetry:
 
 * level and still → `roll ≈ pitch ≈ 0`,
 * roll the robot 30° → `roll ≈ 30` within ~2 s,
-* yaw left by hand → `yaw` decreases.
+* yaw it by hand → `yaw` changes smoothly.
 
 ## Storage
 
 Calibration is stored in NVS (`Preferences`, namespace `imu-cal`) as one blob
 per robot number (`r1` … `r8`), so eight robots can share the firmware. The
-record has a magic and a version; a version mismatch is ignored and the robot
-recalibrates instead of using stale data.
+record carries a magic and a version; a version mismatch is ignored, and the
+robot starts uncalibrated rather than using stale data.
 
-`6` erases the record for the current robot number.
+There is no separate "erase" command: rerunning `CAL` overwrites the record, and
+changing the robot number with `SETID` makes the robot look up a different key.
 
 ## Troubleshooting
 
-| Symptom | Likely cause |
-|---|---|
-| `CAL,gyro,motion_detected_retrying` | robot moved, or a fan/vibration source is running |
-| `CAL,FAIL,accelerometer,solve_failed` | a face pair was too close together — one position was wrong |
-| `CAL,FAIL,magnetometer,sphere_fit_failed` | not enough rotation, or too much magnetic interference |
-| `CAL,FAIL,magnetometer,not_enough_samples` | rotated too slowly / too little |
-| `CAL,SELF_CHECK,recalibration_required` | temperature drift or a real change in the mounting |
-| `mag_rms_ut` high after a good run | metal nearby; move away and redo |
-| `ebx/eby/ebz` drifting | gyro calibration left a bias; redo `1` |
+See the table in [../CALIBRATION.md](../CALIBRATION.md#troubleshooting), which
+covers every `CAL,` failure message.

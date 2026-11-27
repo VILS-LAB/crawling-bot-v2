@@ -49,24 +49,29 @@ servos.moveBothSmooth(120, 60);
 These still ramp; they just spin on `update()` internally. Fine in `setup()` or
 a simple sketch, but they block the display, OTA and telemetry while running.
 
-## Testing the servos from the serial monitor
+## Testing the servos
 
-`src/main.cpp` ships a small test console. Open the serial monitor at 115200
-baud, newline terminated, and type:
+Servo moves go through the robot command protocol, on USB serial **and** on TCP
+port 4242 (see [PROTOCOL.md](PROTOCOL.md)):
 
 | Command | Effect |
 |---|---|
-| `d <angle>` | move the down leg to `<angle>` (0-180) |
-| `u <angle>` | move the up leg to `<angle>` |
-| `b <down> <up>` | move both legs |
-| `s` | stop both legs where they are |
-| `p` | go to the park (initial) pose |
-| `t` | go to the test pose (90/90) |
-| `?` | print the current angles and targets |
+| `ACT <down> <up>` | move both legs; the reply reports the clamped targets |
+| `STOP` | freeze both legs where they are |
+| `PARK` | ramped move to the park pose (180/180) |
+| `GET` | read the current angles and targets |
 
-Every command goes through the ramped profile, so even a typo like `d 180`
-cannot slam the leg into the ground. The IMU calibration menu (`q`) still works;
-the servo console stays out of its way.
+```
+ACT 120 60
+OK ACT d=120 u=60
+STOP
+OK STOP
+```
+
+The reply reports the **clamped** target, so a typo like `ACT 300 10` comes back
+as `OK ACT d=180 u=10` instead of slamming the leg into its mechanical stop.
+`STOP` and `PARK` are also available from `lib/ServoControl` as `stop()` and a
+`moveBothTo(180, 180)`.
 
 ## Tuning
 

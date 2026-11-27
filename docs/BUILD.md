@@ -38,32 +38,31 @@ pio run --target upload && pio device monitor -b 115200
 
 ## First-Time Setup
 
-On first boot, the robot will prompt for a robot number (1-8) via Serial Monitor:
+The robot number (1–8) names the WiFi access point and the OTA hostname.
 
-1. Connect to Serial Monitor at 115200 baud
-2. Enter a number between 1 and 8
-3. The number will be saved to EEPROM
-4. Robot will create AP with SSID: `ESP32-AP-{number}`
-5. OTA hostname will be: `ESP32-OTA-{number}`
+**It no longer prompts on first boot.** An erased or invalid EEPROM defaults the
+robot to **1** and logs a warning, so the robot always comes up:
 
-## Hardware Connections
+```text
+WARN,ROBOT_NUM_INVALID,defaulting_to_1_use_SETID
+```
 
-### I2C Devices (SDA/SCL - Default ESP32 pins)
-- OLED Display (SSD1306) - Address: 0x3C
-- MPU9250 AHRS Sensor - Address: 0x68
+To choose a number, send `SETID` and reboot:
 
-### Servos
-- Servo Down - GPIO 32
-- Servo Up - GPIO 33
+```text
+SETID 3
+OK id=3
+```
 
-> ⚠️ On the ESP32-S3 with `ESP32Servo` 0.13.0, GPIO 32/33 are **not** accepted
-> for PWM (the library only allows 1–21, 35–45, 47, 48 on the S3). The attach
-> will fail and the boot health check reports code `1` (`ATTACH_FAILED`).
-> See [SERVO_HEALTH.md](SERVO_HEALTH.md#pin-note-for-the-esp32-s3).
+The number is written to EEPROM immediately; the access point is renamed at the
+next boot (`ESP32-AP-3`, `ESP32-OTA-3`).
 
-### Power
-- ESP32-S3 via USB-C or external 5V power
-- Servos should have adequate power supply
+## Hardware connections
+
+The pin map, wiring diagram, power rules and mechanical assembly order live in
+[HARDWARE.md](HARDWARE.md) so there is one place to keep them correct. In short:
+OLED and MPU9250 on the shared I2C bus (0x3C and 0x68), servos on **GPIO 7 and
+6**, servos on their own 5 V supply, all grounds common.
 
 ## Troubleshooting
 
@@ -73,22 +72,37 @@ On first boot, the robot will prompt for a robot number (1-8) via Serial Monitor
 2. **Library errors**: Dependencies are auto-installed from platformio.ini
 3. **Compilation errors**: Ensure you have the latest PlatformIO version
 
-### Runtime Issues
+### Runtime issues
 
-1. **OLED not detected**: Check I2C connections and address (0x3C)
-2. **MPU9250 not found**: Verify I2C address (0x68) and connections
-3. **Servos not moving**: Check power supply and GPIO pins
-4. **OTA not working**: Ensure you're connected to the robot's AP
+| Symptom | Check |
+|---|---|
+| OLED blank, robot otherwise fine | I2C wiring, address 0x3C. A missing display is non-fatal by design. |
+| `ERROR,IMU_INIT_FAILED` | IMU wiring, address 0x68, 3.3 V supply |
+| OLED says `Uncalibrated - run CAL` | send `CAL` (see [CALIBRATION.md](CALIBRATION.md)) |
+| `HEALTH,SERVO,...,code=1` | servo signal pin must be 6 or 7 (S3 PWM whitelist) |
+| `HEALTH,SERVO,...,code=4` | servo has no power or is mechanically stuck |
+| Legs do not move | `GET` reports `cal=`; if `cal=0` the servos stay parked |
+| No reply on TCP 4242 | joined the robot's WiFi? port blocked? try serial |
+| `PROTOCOL,CLIENT,dropped,reason=stream_stalled` | the client stopped draining `STREAM` |
+| Robot reboots repeatedly | a task stops feeding the 3 s watchdog; read the log for the last line before reset |
+| OTA does not find the robot | you must be on `ESP32-AP-<n>`; mDNS name is `ESP32-OTA-<n>.local` |
 
-## Development Workflow
+## Development workflow
+
+> **Students:** you do not flash the robot. The firmware is the platform you
+> program against — see [PROTOCOL.md](PROTOCOL.md). This section is for
+> maintainers.
 
 1. Make code changes
 2. Build: `pio run`
-3. Fix any compilation errors
-4. Upload: `pio run --target upload`
-5. Monitor serial output: `pio device monitor -b 115200`
-6. Test functionality
-7. For subsequent updates, use OTA when possible
+3. Run the host tests: `test/host/run.sh`
+4. Fix any failures
+5. Upload: `pio run --target upload`
+6. Monitor: `pio device monitor -b 115200`
+7. Test on hardware; for subsequent updates use OTA
+
+Conventions, the release process and what must be updated when the protocol
+changes: [DEVELOPMENT.md](DEVELOPMENT.md).
 
 ## OTA Updates (After Initial Upload)
 
@@ -101,19 +115,35 @@ On first boot, the robot will prompt for a robot number (1-8) via Serial Monitor
 
 ## Calibration
 
-For best AHRS performance, open the serial menu and run the guided calibration:
+Boot only *verifies* a stored calibration; it never blocks and never forces a
+full run. If it is missing or fails, the robot parks the servos, shows
+`Uncalibrated - run CAL` and accepts the `CAL` command.
 
-1. Open the serial monitor at 115200 baud.
-2. Send `q` to open the IMU menu.
-3. Send `4` to calibrate gyro, accelerometer and magnetometer, or use `1`, `2`
-   or `3` individually.
-4. Follow the serial and OLED instructions; send `x` to cancel.
+```bash
+cd examples/python && python calibrate.py
+```
+
+Full procedure, stage details and every failure message:
+[CALIBRATION.md](CALIBRATION.md).
 
 ## Testing
 
-The health check runs automatically on startup and tests:
-- OLED display
-- AHRS sensor (orientation)
-- Servo motors (movement)
+Three layers, cheapest first:
 
-Monitor the OLED display and serial output for status.
+| Layer | Command | Needs hardware |
+|---|---|---|
+| C++ host tests | `test/host/run.sh` | no |
+| Python client tests | `python -m unittest discover -s examples/python/tests` | no |
+| On-robot self-test | power cycle and watch the log | yes |
+
+The on-robot self-test is the boot **health check**: it verifies the servos
+electrically and by sweeping them while watching the gyro. It only runs when a
+valid calibration is present, because it deliberately moves the legs. Codes and
+their meaning: [SERVO_HEALTH.md](SERVO_HEALTH.md).
+
+A good boot ends with:
+
+```text
+HEALTH,SUMMARY,ok=1,down=0,up=0
+PROTOCOL,READY,serial=115200,tcp_port=4242,stream_hz=10
+```

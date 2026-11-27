@@ -3,7 +3,6 @@
 
 const char* Network::BASE_SSID = "ESP32-AP-";
 const char* Network::BASE_OTA_HOSTNAME = "ESP32-OTA-";
-const char* Network::AP_PASSWORD = "12345678";
 
 Network::Network(Display* display) : display(display), robotNumber(0), otaTaskHandle(NULL) {
 }
@@ -97,37 +96,20 @@ void Network::otaTaskFunction(void* parameter) {
 }
 
 uint8_t Network::readRobotNumber() {
-    uint8_t number = EEPROM.read(ROBOT_NUM_ADDR);
-    if (number < 1 || number > 8) {
-        Serial.println("Invalid or uninitialized robot number. Please set number (1-8).");
-        if (display) {
-            display->clear();
-            display->print("Set Robot Num:");
-            display->setCursor(0, 16);
-            display->print("1-8");
-        }
-        
-        while (!Serial.available()) {
-            delay(100);
-        }
-        
-        number = Serial.parseInt();
-        if (number >= 1 && number <= 8) {
-            saveRobotNumber(number);
-            if (display) {
-                display->clear();
-                display->print("Robot Num Set:");
-                display->setCursor(0, 16);
-                display->print(number);
-            }
-            delay(2000);
-        } else {
-            Serial.println("Invalid input. Defaulting to robot number 1.");
-            number = 1;
-            saveRobotNumber(number);
-        }
-    }
-    return number;
+    const uint8_t number = EEPROM.read(ROBOT_NUM_ADDR);
+    if (number >= MIN_ROBOT_NUM && number <= MAX_ROBOT_NUM)
+        return number;
+
+    // Boot must never wait for a human: with an erased EEPROM (0xFF) or a
+    // corrupt value the robot still has to come up, be reachable over OTA and
+    // accept SETID. Default to robot 1 and say so loudly instead of blocking
+    // on the serial port forever.
+    Serial.println("WARN,ROBOT_NUM_INVALID,defaulting_to_1_use_SETID");
+    Serial.print("WARN,ROBOT_NUM_RAW,");
+    Serial.println(number);
+
+    saveRobotNumber(MIN_ROBOT_NUM);
+    return MIN_ROBOT_NUM;
 }
 
 void Network::saveRobotNumber(uint8_t number) {
@@ -135,6 +117,17 @@ void Network::saveRobotNumber(uint8_t number) {
     EEPROM.commit();
     Serial.print("Saved robot number: ");
     Serial.println(number);
+}
+
+bool Network::setRobotNumber(uint8_t number) {
+    if (number < MIN_ROBOT_NUM || number > MAX_ROBOT_NUM)
+        return false;
+
+    robotNumber = number;
+    snprintf(ssid, sizeof(ssid), "%s%d", BASE_SSID, robotNumber);
+    snprintf(otaHostname, sizeof(otaHostname), "%s%d", BASE_OTA_HOSTNAME, robotNumber);
+    saveRobotNumber(robotNumber);
+    return true;
 }
 
 uint8_t Network::getRobotNumber() {
@@ -147,4 +140,10 @@ const char* Network::getSSID() {
 
 const char* Network::getHostname() {
     return otaHostname;
+}
+
+const char* Network::getIPAddress() {
+    static char address[16];
+    snprintf(address, sizeof(address), "%s", WiFi.softAPIP().toString().c_str());
+    return address;
 }

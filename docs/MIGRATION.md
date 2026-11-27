@@ -1,10 +1,21 @@
-# Migration Guide: Arduino to PlatformIO
+# History and migration notes
 
-## Summary of Changes
+Three eras, oldest first, plus what changed between them. Read this if you are
+looking for something that used to exist and no longer does, or if you are
+porting material written for an older version of the course.
 
-This document outlines the key differences between the old Arduino template and the new PlatformIO implementation.
+| Era | Student worked by | Robot ran |
+|---|---|---|
+| Arduino template (`archive/old-template.ino`) | editing one `.ino` file | the student's sketch |
+| PlatformIO firmware (previous) | filling in `lib/Training` and flashing | the student's algorithm |
+| **Current** | writing a client that talks over WiFi/USB | identical lab-wide firmware |
 
-## Hardware Changes
+The rest of this page details the first two transitions; the third is the one
+that matters going forward.
+
+## Arduino → PlatformIO
+
+### Hardware changes
 
 | Component | Old (Arduino) | New (PlatformIO) |
 |-----------|---------------|------------------|
@@ -13,9 +24,9 @@ This document outlines the key differences between the old Arduino template and 
 | Board | ESP32 Dev Module | ESP32-S3-DevKitM-1 |
 | Servos | 2x Servo Motors | 2x Servo Motors (same) |
 
-## Code Architecture Changes
+### Code architecture
 
-### Old Structure (Monolithic)
+#### Old structure (monolithic)
 ```
 old-template.ino
 └── All code in single file
@@ -25,20 +36,22 @@ old-template.ino
     └── loop()
 ```
 
-### New Structure (Library-Based)
+#### New structure (library-based)
 ```
 src/main.cpp              # Main application
 lib/
 ├── Display/              # OLED display management
-├── AHRS/                 # MPU9250 sensor & motion tracking
+├── IMU/                  # MPU9250 + AHRS pipeline
 ├── ServoControl/         # Servo motor control
 ├── Network/              # WiFi AP & OTA updates
-└── Training/             # RL training (template)
+├── CommandServer/        # serial + TCP command protocol
+├── I2CBus/               # shared I2C mutex (OLED + IMU)
+└── SystemWatchdog/       # esp_task_wdt wrapper
 ```
 
-## API Changes
+### API changes
 
-### Display
+#### Display
 
 **Old (LCD):**
 ```cpp
@@ -60,7 +73,7 @@ display.print("Hello", 0, 0);
 display.print("World", 0, 16);
 ```
 
-### Distance/Motion Sensing
+#### Distance/motion sensing
 
 **Old (SRF-05):**
 ```cpp
@@ -95,7 +108,7 @@ float gyroZ = ahrs.getGyroZ();
 float magX = ahrs.getMagX();
 ```
 
-### Servo Control
+#### Servo control
 
 **Old:**
 ```cpp
@@ -120,7 +133,7 @@ servos.moveDownSmooth(90, 10);
 servos.setInitialPosition();
 ```
 
-### Network & OTA
+#### Network and OTA
 
 **Old:**
 ```cpp
@@ -140,7 +153,7 @@ network.startOTATask();   // Starts FreeRTOS task
 uint8_t num = network.getRobotNumber();
 ```
 
-## Pin Definitions
+#### Pin definitions
 
 **Old:**
 ```cpp
@@ -153,15 +166,17 @@ const int control_servo_up = 33;
 **New:**
 ```cpp
 // config.h
-#define SERVO_PIN_DOWN 32
-#define SERVO_PIN_UP 33
+#define SERVO_PIN_DOWN 7
+#define SERVO_PIN_UP 6
 // I2C pins are defaults (SDA: 21, SCL: 22)
 // No ultrasonic sensor pins needed
 ```
 
-## Feature Improvements
+## PlatformIO → protocol-driven firmware
 
-### 1. Enhanced Sensing Capabilities
+### Feature improvements
+
+#### Enhanced sensing
 
 The MPU9250 provides far more data than the SRF-05:
 
@@ -178,7 +193,7 @@ The MPU9250 provides far more data than the SRF-05:
 - Temperature sensing
 - No line-of-sight required
 
-### 2. Better Display
+#### Better display
 
 **Old (LCD 16x2):**
 - 16 characters × 2 lines
@@ -192,7 +207,7 @@ The MPU9250 provides far more data than the SRF-05:
 - Better contrast
 - More information density
 
-### 3. Modular Architecture
+#### Modular architecture
 
 **Benefits:**
 - Easier to test individual components
@@ -201,25 +216,32 @@ The MPU9250 provides far more data than the SRF-05:
 - Simpler maintenance
 - Clear separation of concerns
 
-### 4. Training Framework
+### The student interface: protocol instead of a code template
 
-**Old:**
-```cpp
-void doTraining() {
-    // TODO
-}
+**Old:** students filled in `lib/Training/Training.cpp` and reflashed the robot.
+
+**New:** the robot is a service. Student code lives outside this repository and
+talks to it over serial or TCP:
+
+```text
+GET        -> OK SNAP,...        observe
+ACT 120 60 -> OK ACT d=120 u=60  act
+STREAM 50  -> OK stream=50       log
 ```
 
-**New:**
-```cpp
-Training training;
-training.begin();
-training.startTraining();
-training.executeLearnedBehavior();
-// Well-defined interface for future RL implementation
-```
+Why this changed:
 
-## Migration Steps for Developers
+| Old model | New model |
+|---|---|
+| a bug in student code bricks the robot | a bug disconnects a client; the robot keeps running |
+| every student needs the toolchain | any language, any machine on the WiFi |
+| results are not comparable | every robot runs identical firmware |
+| the firmware must compile the learner | the learner runs where it is easy to debug |
+
+`lib/Training` was removed accordingly. See [PROTOCOL.md](PROTOCOL.md) and
+[languages/](languages/README.md).
+
+### Migration steps for developers
 
 1. **Update platformio.ini** with new dependencies
 2. **Create library structure** in `lib/` directory
@@ -229,9 +251,9 @@ training.executeLearnedBehavior();
 6. **Encapsulate networking** in Network class
 7. **Update main.cpp** to use new libraries
 8. **Test each module** independently
-9. **Implement training** when ready (currently placeholder)
+9. **Add your policy module** when ready (see EXAMPLES.md)
 
-## Backward Compatibility Notes
+### Backward compatibility
 
 This is a **breaking change** - the old code will not run on the new hardware without modification because:
 
@@ -248,9 +270,10 @@ However, all **functionality** has been preserved or enhanced:
 - ✅ OTA updates
 - ✅ Robot number configuration
 - ✅ Health checks
-- ✅ Training framework (ready for implementation)
+- ✅ Serial + TCP command protocol (new)
+- ✅ Hardware watchdog and shared I2C bus (new)
 
-## Build Process Changes
+### Build process changes
 
 **Old:**
 - Arduino IDE
@@ -264,18 +287,24 @@ However, all **functionality** has been preserved or enhanced:
 - Board configured in platformio.ini
 - Upload via USB or OTA
 
-## Next Steps
+## Next steps
 
-After migration:
+For the firmware platform:
 1. Test all hardware components
-2. Calibrate MPU9250 for accurate readings
-3. Implement training algorithms in Training library
-4. Fine-tune servo movements for your robot's mechanics
-5. Customize display output for your use case
+2. Calibrate the MPU9250 (see [CALIBRATION.md](CALIBRATION.md))
+3. Fine-tune servo speed and limits for your mechanics
+4. Customize the display pages
+
+For a student project (no firmware change required):
+1. Write a client against [PROTOCOL.md](PROTOCOL.md) in any language
+2. Start from [examples/python](../examples/python/README.md)
 
 ## Questions?
 
-Refer to:
-- `README.md` - General project documentation
-- `BUILD.md` - Build and deployment instructions
-- Library source files for API details
+| Topic | Document |
+|---|---|
+| the interface | [PROTOCOL.md](PROTOCOL.md) |
+| building and flashing | [BUILD.md](BUILD.md) |
+| firmware internals | [ARCHITECTURE.md](ARCHITECTURE.md) |
+| hardware | [HARDWARE.md](HARDWARE.md) |
+| working on the firmware | [DEVELOPMENT.md](DEVELOPMENT.md) |

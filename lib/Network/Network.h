@@ -7,6 +7,8 @@
 #include <EEPROM.h>
 #include <ESPmDNS.h>
 
+#include "../../include/config.h"
+
 // Forward declaration
 class Display;
 
@@ -18,7 +20,12 @@ public:
     uint8_t getRobotNumber();
     const char* getSSID();
     const char* getHostname();
-    
+    const char* getIPAddress();
+
+    // Stores a new robot number in EEPROM and rebuilds the SSID/hostname.
+    // The access point itself keeps its old name until the next reboot.
+    bool setRobotNumber(uint8_t number);
+
     static void otaTaskFunction(void* parameter);
 
 private:
@@ -28,11 +35,8 @@ private:
     char otaHostname[32];
     TaskHandle_t otaTaskHandle;
     
-    static const uint8_t EEPROM_SIZE = 1;
-    static const uint8_t ROBOT_NUM_ADDR = 0;
     static const char* BASE_SSID;
     static const char* BASE_OTA_HOSTNAME;
-    static const char* AP_PASSWORD;
     
     void setupAP();
     void setupOTA();

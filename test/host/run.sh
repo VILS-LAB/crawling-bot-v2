@@ -32,6 +32,14 @@ echo "compiling host tests..."
     "$root/lib/ServoControl/ServoMotion.cpp" \
     -o "$build/test_servo_motion"
 
+# shellcheck disable=SC2086
+"$CXX" $CXXFLAGS \
+    -I"$root/lib/CommandServer" \
+    "$here/test_command_parser.cpp" \
+    "$root/lib/CommandServer/CommandParser.cpp" \
+    -o "$build/test_command_parser"
+
 echo "running..."
 "$build/test_imu_math"
 "$build/test_servo_motion"
+"$build/test_command_parser"
