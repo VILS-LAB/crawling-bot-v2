@@ -13,39 +13,49 @@ gyro_corrected  = gyro_raw - gyroBias                     deg/s
 mag_corrected   = magMatrix * (mag_raw - magOffset)       uT
 ```
 
-PX4 throws away the off-diagonal accelerometer terms; this project keeps them
-because the GY-91 breakout is hand-soldered and its axes are not perfectly
-orthogonal.
+The firmware stores a full 3×3 accelerometer correction matrix, including
+off-diagonal terms. This differs from the diagonal correction retained by PX4's
+sensor-calibration path and can represent cross-axis coupling in the assembled
+breakout; it does not compensate for arbitrary board-to-chassis rotation.
 
-## Gyro: mean over a still window
+## Gyro: mean and quality checks over a still window
 
-The stage settles for 1.5 s, then collects up to 2500 samples while the robot is
-still. Success prints `CAL,gyro,bias=x,y,z`.
+Each attempt settles for 1.5 s, then collects up to 2500 accepted samples while
+the robot is still (at least 2000 are required). Samples with acceleration
+outside 0.85–1.15 g or gyro magnitude above 8 °/s are skipped. Success prints
+`CAL,gyro,bias=x,y,z`.
 
-The acceptance check is PX4's: per-axis standard deviation must be ≤ 0.20 °/s **and** the
-median must be within 0.6 °/s of the mean. The median check catches a slow,
-steady rotation that a variance test alone would miss.
+The firmware rejects an attempt if any per-axis standard deviation exceeds
+0.20 °/s or if the rolling median of the **last three accepted samples** differs
+from that axis's run mean by more than 0.6 °/s. The rolling median is not a
+median over the full run and is not a reliable detector of every slow or
+constant rotation, so keep the robot still for the complete stage.
 
 ## Accelerometer: six-position solve
 
 Six orientations, one per face. For each, the firmware waits until the
 orientation is correct before collecting.
 
-| Step | Face up | Reference vector |
+| Step | Prompt | Reference vector (g) |
 |---|---|---|
-| 1 | X+ (nose up) | ( g, 0, 0) |
-| 2 | X- (nose down) | (-g, 0, 0) |
-| 3 | Y+ (left down) | ( 0, g, 0) |
-| 4 | Y- (right down) | ( 0,-g, 0) |
-| 5 | Z+ (upside down) | ( 0, 0, g) |
-| 6 | Z- (upright) | ( 0, 0,-g) |
+| 1 | `X+` (sensor/body +X points up) | `( 1, 0, 0)` |
+| 2 | `X-` (sensor/body -X points up) | `(-1, 0, 0)` |
+| 3 | `Y+` (sensor/body +Y points up) | `( 0, 1, 0)` |
+| 4 | `Y-` (sensor/body -Y points up) | `( 0,-1, 0)` |
+| 5 | `Z+` (sensor/body +Z points up) | `( 0, 0, 1)` |
+| 6 | `Z-` (sensor/body -Z points up) | `( 0, 0,-1)` |
+
+The board is mounted rotated relative to the chassis. Follow the sensor-axis
+prompt, not chassis-face names; the firmware does not apply a separate
+sensor-to-chassis rotation.
 
 Acceptance per position:
 
-* hold it **still** — `|gyro|` must stay under 3 °/s,
-* the dominant axis must match and have the right sign,
-* `|accel|` must be within 0.85–1.15 g,
-* 180 samples are averaged.
+* the named sensor/body axis must be dominant and have the requested sign,
+* hold it **still** — the calibrated gyro magnitude must stay under 3 °/s,
+* raw `|accel|` must be within 0.85–1.15 g and the requested axis magnitude at
+  least 0.75 g,
+* 180 samples are averaged, at least 10 ms apart; each face has a 120 s timeout.
 
 The six averaged vectors are then solved for `accelBias` and an `accelMatrix`.
 Success prints both plus the residual:
@@ -56,8 +66,10 @@ CAL,accelerometer,matrix=...
 CAL,accelerometer,rms_g=0.00412
 ```
 
-`rms_g` below ~0.02 g is good. Higher means the robot moved during a step or
-the mounting is loose.
+`rms_g` is a fit diagnostic, not a firmware acceptance threshold. Lower is
+better; a large residual can indicate movement during a step, incorrect face
+placement, or non-ideal sensor behavior. The calibration routine does not
+reject a fit based on this RMS value.
 
 ## Magnetometer: sphere then ellipsoid
 
@@ -75,10 +87,11 @@ CAL,magnetometer,offset=...
 CAL,magnetometer,fit=ellipsoid
 ```
 
-* `sphere_radius` should be 20–70 µT (Earth's field is ~25–65 µT). Outside that
-  range the fit is rejected.
-* `rms` below ~1 µT is good. Above ~2 µT, redo it somewhere with less
-  interference.
+*   The fitted sphere radius must be 20–70 µT or the sphere fit is rejected. The
+  Earth's field is commonly around 25–65 µT, but nearby interference changes the
+  local field; the fit window is only a plausibility check.* The RMS is a fit diagnostic, not a firmware acceptance gate. Lower is
+  generally better; a high residual suggests poor orientation coverage or
+  magnetic interference and is a reason to repeat the fit in a cleaner area.
 * `fit=ellipsoid` means the ellipsoid refinement improved on the sphere fit,
   which is what you want on a hand-soldered board.
 
@@ -91,17 +104,12 @@ GET
 OK SNAP,id=1,...,cal=1,d=180,dt=180,u=180,ut=180,act_moving=0
 ```
 
-The telemetry stream carries the residuals:
-
-| Field | Good value | Meaning |
-|---|---|---|
-| `acc_norm_g` | 0.99–1.01 | accelerometer magnitude after correction |
-| `gyro_norm_dps` | < 0.1 | residual rate, bias removed |
-| `mag_norm` | 25–65 µT | local field magnitude |
-| `rate_hz` | ~200 | measured IMU sampling rate |
-| `accel_rms_g` | < 0.02 | six-position fit residual |
-| `mag_rms_ut` | < 2 | sphere/ellipsoid fit residual |
-| `mag_fit` | 1 or 2 | 1 = sphere, 2 = ellipsoid |
+The `IMU,` stream carries calibration residuals and live diagnostic fields;
+`GET` is a separate, smaller snapshot. Refer to [../PROTOCOL.md](../PROTOCOL.md)
+for the stream setup and [ARCHITECTURE.md §9](./ARCHITECTURE.md#9-telemetry-contract)
+for column meanings. Residual values describe the fit and are not firmware
+acceptance gates. Check the calibrated field magnitude against the local
+expectation; magnetic interference can still affect heading even after a fit.
 
 Behavioural check, with live telemetry:
 

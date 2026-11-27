@@ -81,7 +81,7 @@ OLED and MPU9250 on the shared I2C bus (0x3C and 0x68), servos on **GPIO 7 and
 | OLED says `Uncalibrated - run CAL` | send `CAL` (see [CALIBRATION.md](CALIBRATION.md)) |
 | `HEALTH,SERVO,...,code=1` | servo signal pin must be 6 or 7 (S3 PWM whitelist) |
 | `HEALTH,SERVO,...,code=4` | servo has no power or is mechanically stuck |
-| Legs do not move | `GET` reports `cal=`; if `cal=0` the servos stay parked |
+| Legs remain parked after boot | `GET` reports `cal=`; boot parks them and skips the motion health check when `cal=0`. The `ACT` command itself is not calibration-interlocked; calibrate first and do not command motion beforehand. |
 | No reply on TCP 4242 | joined the robot's WiFi? port blocked? try serial |
 | `PROTOCOL,CLIENT,dropped,reason=stream_stalled` | the client stopped draining `STREAM` |
 | Robot reboots repeatedly | a task stops feeding the 3 s watchdog; read the log for the last line before reset |

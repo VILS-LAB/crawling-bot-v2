@@ -5,7 +5,11 @@ against upstream. Full design rationale: [ARCHITECTURE.md](./ARCHITECTURE.md).
 For how this compares to the two earlier in-house implementations, see
 [IMPLEMENTATION_HISTORY.md](./IMPLEMENTATION_HISTORY.md).
 
-PX4 revision used: the checkout in `github-reference-repositories/PX4-Autopilot`.
+The implementation was compared with the PX4 source paths listed below. The
+repository's `github-reference-repositories/PX4-Autopilot` checkout is a local
+reference, not a pinned upstream revision; verify the checked-out revision
+before relying on line-level comparisons. This table describes selected ports,
+not the complete PX4 IMU runtime.
 
 ## Ported
 
@@ -16,8 +20,8 @@ PX4 revision used: the checkout in `github-reference-repositories/PX4-Autopilot`
 | `src/lib/mathlib/math/filter/NotchFilter.hpp` | [`ImuFilters.cpp`](../../lib/IMU/ImuFilters.cpp) | Direct Form I, same coefficient math and reset seeding |
 | `src/lib/mathlib/math/filter/MedianFilter.hpp` | [`ImuFilters.cpp`](../../lib/IMU/ImuFilters.cpp) | Window 3 |
 | `src/lib/mathlib/math/filter/AlphaFilter.hpp` | [`ImuFilters.cpp`](../../lib/IMU/ImuFilters.cpp) | Time-constant form |
-| `src/modules/commander/gyro_calibration.cpp` | `AHRS::calibrateGyroscope()` | Worker + median/mean quality gate + retries |
-| `src/modules/commander/accelerometer_calibration.cpp` | `AHRS::calibrateAccelerometer()` + `calibration::fitAccelerometerSixPosition()` | Six positions, same solve |
+| `src/modules/commander/gyro_calibration.cpp` | `AHRS::calibrateGyroscope()` | Sampling and related quality checks adapted; firmware's median comparison uses the last three samples |
+| `src/modules/commander/accelerometer_calibration.cpp` | `AHRS::calibrateAccelerometer()` + `calibration::fitAccelerometerSixPosition()` | Guided six positions and related solve; this project retains a full correction matrix |
 | `src/modules/commander/mag_calibration.cpp` | `AHRS::calibrateMagnetometer()` | Sample collection + min-distance rule |
 | `src/modules/commander/lm_fit.cpp` | `calibration::fitMagnetometerSphere/Ellipsoid()` | LM sphere then ellipsoid |
 | `src/lib/sensor_calibration/Accelerometer.hpp` (`Correct`) | `calibration::applyAccelCorrection()` | Same model |
@@ -32,10 +36,10 @@ PX4 revision used: the checkout in `github-reference-repositories/PX4-Autopilot`
 
 | Item | PX4 | Here | Reason |
 |---|---|---|---|
-| Body/world frame | FRD / NED | FLU / ENU-like | Project convention; see ARCHITECTURE §2 |
+| Body/world frame | FRD / NED | firmware body labels FLU; estimator world N-W-U | Project convention and physical mounting are distinct; see ARCHITECTURE §2 |
 | `ATT_W_GYRO_BIAS` | 0.1 | 0.02 | 0.1 is under-damped for a robot that sits still for minutes |
 | `ATT_BIAS_MAX` | 0.05 rad/s | 0.15 rad/s | GY-91 residual bias after a short calibration |
-| Accel matrix | diagonal only | full 3×3 | Hand-soldered GY-91 has real cross-axis terms |
+| Accel matrix | PX4 correction uses a diagonal scale from its fit | full 3×3 | The firmware retains cross-axis terms to model the hand-assembled breakout |
 | Mag units | Gauss | µT | Project convention; LM thresholds scaled ×100 |
 | Mag fit seeding | previous calibration | sample centroid + mean distance | No previous calibration on first run |
 | Mag fit radius window | 0.2–0.7 G | 20–70 µT | Same physical window, different units |

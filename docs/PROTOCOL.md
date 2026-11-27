@@ -78,9 +78,9 @@ Field order is fixed; new fields are only appended.
 | `mx`,`my`,`mz` | µT | calibrated magnetic field |
 | `temp_c` | °C | IMU temperature |
 | `still` | 0/1 | still detector result |
-| `trust` | 0..1 | how much the accelerometer is currently fused |
+| `trust` | 0..1 | smoothed diagnostic trust target for accelerometer correction (1 still, 0 moving, 0.05 after prolonged motion); the current estimator update does not consume this value |
 | `rate_hz` | Hz | measured IMU sampling rate |
-| `cal` | 0/1 | a valid calibration is loaded |
+| `cal` | 0/1 | calibration complete and valid for this boot (stored data passed self-check, or a guided run completed) |
 | `d`,`u` | deg | current leg angles |
 | `dt`,`ut` | deg | commanded leg targets |
 | `act_moving` | 0/1 | a ramp is still in progress |
@@ -98,11 +98,13 @@ OK stream=0
 
 * `STREAM` sets the rate **for the transport it arrived on**. The USB serial
   port streams at 10 Hz by default; every TCP client starts quiet.
-  **A client is expected to ask.** Connecting and waiting is not enough, and over
-  serial the previous session's rate still applies (including `0`). Any tool that
-  only listens can therefore appear to see "no data" on a perfectly good link.
-* The rate is clamped to `PROTOCOL_MAX_STREAM_HZ` (50), which is the IMU task
-  rate: asking for more just repeats samples.
+  **A TCP client must ask.** Connecting and waiting is not enough. Serial uses
+  its configured default or the most recent serial `STREAM` command (including
+  `0`, which disables it). A listener can therefore see no frames on a healthy
+  link if serial streaming was turned off or a TCP client did not request a rate.
+* The rate is clamped to `PROTOCOL_MAX_STREAM_HZ` (50 Hz). This is a protocol
+  output cap, not the IMU sampling rate (nominally 200 Hz); the achieved stream
+  rate is also subject to loop and transport throughput.
 * **`STREAM <hz>` is a request, not a guarantee.** A frame is ~440 bytes, so
   50 Hz needs ~220 kB/s. USB-CDC and WiFi both deliver that on a good link, but
   the *achieved* rate is limited by the slowest part of the path (host scheduling,

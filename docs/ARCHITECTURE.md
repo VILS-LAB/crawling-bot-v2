@@ -40,7 +40,7 @@ Serial + watchdog
 Two rules encoded in that order:
 
 * **Nothing waits for a human.** An erased EEPROM defaults to robot 1; a missing
-  calibration parks the servos and continues. The robot is always reachable.
+  calibration leaves the servos parked and continues. The robot is always reachable.
 * **The servo self-test runs last.** It moves the legs, which would corrupt a
   calibration still being verified.
 
@@ -51,7 +51,7 @@ Failure handling per stage:
 | OLED | logged, display stays blank, robot continues |
 | WiFi AP | logged, OTA unavailable, serial still works |
 | MPU9250 | logged, `CAL`/`GET` report unavailable, robot stays reachable |
-| calibration | servos parked, `cal=0`, `CAL` accepted |
+| calibration | servos remain parked and `cal=0`; guided `CAL` is available (the `ACT` handler itself does not enforce calibration state) |
 | IMU task | logged, loop task unsubscribed from the watchdog, robot halts visibly |
 | servo attach | logged, health check reports code 1, remainder of boot continues |
 
@@ -59,9 +59,8 @@ Failure handling per stage:
 
 | Core | Runs | Why |
 |---|---|---|
-| 0 | Arduino `loop()`, WiFi/OTA stack, the command server | the loop must stay responsive to commands |
-| 1 | IMU sampling + estimation (200 Hz) | a display refresh or an OTA burst must not disturb `dt` |
-| 1 | OTA handler (`ArduinoOTA.handle()`) | cheap, and keeps the loop task free |
+| 0 | Arduino `loop()` and command server | the loop must stay responsive to commands |
+| 1 | IMU sampling + estimation (nominal 200 Hz), OTA handler | separate tasks; actual IMU rate is measured and may vary |
 
 The IMU task publishes a snapshot under a spinlock; `loop()` copies it. Public
 getters read only the copy, so no locks are needed in client-facing code.
@@ -147,7 +146,7 @@ ROBOT,UNCALIBRATED,send_CAL_to_calibrate
 | I2C bus wedged | mutex timeout | the transfer is skipped, robot keeps running |
 | OLED missing | init returns false | display is a no-op, robot boots |
 | EEPROM erased | range check | default robot 1, warning printed |
-| Calibration invalid | boot self-check | servos parked, `cal=0` |
+| Calibration invalid | boot self-check | servos remain parked, `cal=0`; no `ACT` interlock is implemented |
 
 ## Where to change things
 

@@ -11,13 +11,14 @@ Full architecture: [ARCHITECTURE.md](./ARCHITECTURE.md).
 ## Frames
 
 ```text
-body  : X forward, Y left,  Z up     (FLU, right-handed)
-world : X north,   Y west,  Z up     (N-W-U, right-handed)
+firmware body  : X forward, Y left,  Z up     (FLU, right-handed)
+firmware world : X north,   Y west,  Z up     (N-W-U, right-handed)
 ```
 
-On this robot the IMU is mounted so its axes line up with the chassis: body +X
-points **right** and body +Y points **forward**. The firmware's "forward" axis
-therefore tracks the robot's right-hand side. See
+The sensor is mounted with sensor/body +X toward chassis right and +Y toward
+chassis forward. The code does not rotate sensor samples into a separate chassis
+frame, so the firmware's body-frame "forward" label does not match physical
+chassis forward on this mounting. See
 [ARCHITECTURE.md §2](./ARCHITECTURE.md#2-frame-conventions-read-this-before-touching-any-math)
 for the `heading = (270 - yaw) mod 360` conversion the visualizers apply.
 
@@ -56,9 +57,11 @@ the host test asserts the two agree to `1e-5`.
 
 ## Gravity removal
 
-After the rotation, the world-frame Z component is the sum of gravity and any
-real vertical acceleration. A slowly-adapting `gravityReference` (updated only
-while the robot is still) is subtracted from it:
+After the rotation, the Z component is the sum of the rotated acceleration's
+vertical component and gravity. The AHRS currently calls this transform with
+yaw zero, so its horizontal components are not yaw-aligned to the estimator's
+world frame. A slowly-adapting `gravityReference` (updated only while the robot
+is still) is subtracted from Z:
 
 ```text
 linearAccel.z = worldAccel.z - gravityReference
@@ -77,8 +80,10 @@ result. The sequential form is kept because:
 3. changing it would silently change the meaning of every plot in both
    visualizers.
 
-The quaternion is still published in telemetry (`quaternion[4]`) for anything
-that needs it.
+The quaternion is available through the `AHRS` C++ API (`getQuatW/X/Y/Z`). It
+is not part of the current `IMU,` CSV fields or the `GET` snapshot. A client
+that needs the quaternion must use an API that exposes those getters or extend
+the protocol deliberately.
 
 ## Verification
 

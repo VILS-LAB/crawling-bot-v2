@@ -17,10 +17,12 @@ attach servos  ->  verify stored calibration  ->  servo health check  ->  Ready
 ```
 
 Boot never blocks on a human: it only *verifies* the stored calibration. If the
-check fails (or nothing is stored), the robot skips the health check — the
-servos stay parked — and the OLED shows `Uncalibrated - run CAL`. Send `CAL`
-over serial or TCP to run the guided procedure; the full health check then runs
-on the next boot with a valid calibration.
+check fails (or nothing is stored), the robot skips the health check and leaves
+the servos parked; the OLED shows `Uncalibrated - run CAL`. The `ACT` command
+handler is not interlocked with calibration, so an explicit command can still
+move a servo. Calibrate before normal use and do not command movement while
+uncalibrated. The full health check runs on the next boot with a valid
+calibration.
 
 The health check runs **after** calibration, on purpose:
 

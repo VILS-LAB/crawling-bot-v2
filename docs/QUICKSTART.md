@@ -79,8 +79,9 @@ OK SNAP,id=1,t=51402,roll=1.24,...,cal=1,d=180,dt=180,u=180,ut=180,act_moving=0
 
 ## 5. Calibrate
 
-If `calibrated` printed `False`, the robot has parked its servos and will not
-move until it has a valid calibration:
+If `calibrated` printed `False`, boot left the servos parked and skipped their
+motion health check. The `ACT` protocol itself is not interlocked with
+calibration, so do not command movement until calibration succeeds:
 
 ```bash
 python calibrate.py

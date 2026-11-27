@@ -26,9 +26,11 @@ load calibration -> verify (2 s warm-up + 200 samples) -> valid?
                                                                     "Uncalibrated - run CAL"
 ```
 
-A robot with `cal=0` still boots, still answers `PING`/`ID`/`GET` and still
-accepts OTA. It just will not move its legs, because a move is only meaningful
-once the robot knows its own orientation.
+A robot with `cal=0` still boots, answers `PING`/`ID`/`GET` and accepts OTA.
+Boot parks the servos and skips the servo health motion test, but the current
+`ACT` command handler does not enforce calibration state; an explicit movement
+command can still move them. Leave the robot parked until calibration has
+passed, and follow the calibration instructions before normal operation.
 
 ## Running the calibration
 
@@ -54,29 +56,38 @@ Progress arrives as `CAL,...` lines; the run ends with `CAL,DONE` and
 
 ### Stage 1 — gyro (about 15 s)
 
-Keep the robot **completely still** on a solid surface. The firmware rejects the
-run if any axis moves more than 0.20 °/s, and retries up to five times.
+Keep the robot **completely still** on a solid surface. A 1.5 s settling
+period is followed by up to 2,500 accepted samples (at least 2,000 required);
+samples outside 0.85–1.15 g or above 8 °/s are ignored. Each axis must meet
+both a standard-deviation limit of 0.20 °/s and a median-to-mean difference of
+0.6 °/s or less. Failed quality checks are retried up to five times.
 
 ### Stage 2 — accelerometer (six positions, ~2 min)
 
-The OLED names the face that must point up; the firmware waits until it sees
-that orientation before collecting. Follow it exactly — a wrong position is
-detected and refused, not silently averaged in.
+The OLED names the sensor/body axis and sign that must point up; the firmware
+waits until that orientation is detected before collecting. Since the board is
+mounted rotated relative to the chassis, use the axis prompt rather than
+assuming a chassis-face label. Each position requires 180 samples collected at
+10 ms intervals while the gyro is below 3 °/s and acceleration is within
+0.85–1.15 g; a position times out after 120 s.
 
 | Step | OLED says | Meaning |
 |---|---|---|
-| 1 | `Put X+ up` | nose up |
-| 2 | `Put X- up` | nose down |
-| 3 | `Put Y+ up` | left side down |
-| 4 | `Put Y- up` | right side down |
-| 5 | `Put Z+ up` | upside down |
-| 6 | `Put Z- up` | upright |
+| 1 | `Put X+ up` | sensor/body +X points up |
+| 2 | `Put X- up` | sensor/body -X points up |
+| 3 | `Put Y+ up` | sensor/body +Y points up |
+| 4 | `Put Y- up` | sensor/body -Y points up |
+| 5 | `Put Z+ up` | sensor/body +Z points up |
+| 6 | `Put Z- up` | sensor/body -Z points up |
 
 ### Stage 3 — magnetometer (20 s)
 
-Rotate the robot **slowly through all orientations** in a spot away from metal,
-magnets, speakers and laptop power supplies. A dense cluster in one orientation
-produces a bad sphere/ellipsoid fit.
+Rotate the robot **slowly through all orientations for 20 seconds** in a spot
+away from metal, magnets, speakers and high-current wiring. Up to 1,200 samples
+are collected, with at least 3 µT separation from the previous accepted sample;
+at least 200 are required. A dense cluster in one orientation produces a poor
+fit. The firmware fits a sphere, then accepts an ellipsoid refinement only when
+its residual is no worse; the fitted field radius must be 20–70 µT.
 
 ## Checking the result
 
@@ -85,9 +96,11 @@ GET
 OK SNAP,...,cal=1,...
 ```
 
-`cal=1` requires **both** the accelerometer and magnetometer stages to be
-present. A lone `CAL gyro` on a blank robot leaves `cal=0` on purpose, so a later
-run cannot silently use identity accel/mag matrices.
+`cal=1` requires a complete stored record containing all six accelerometer
+positions and a magnetometer fit, then a successful boot self-check. A lone
+`CAL gyro` on a blank robot leaves `cal=0` because the record still lacks the
+required accel and mag calibration. A newly completed guided run is used
+immediately; after reboot, the stored record must pass its self-check again.
 
 ## Troubleshooting
 
@@ -99,8 +112,8 @@ run cannot silently use identity accel/mag matrices.
 | `CAL,FAIL,accelerometer,solve_failed` | one position was wrong | redo all six |
 | `CAL,FAIL,magnetometer,not_enough_samples` | rotated too little | rotate more, slower |
 | `CAL,FAIL,magnetometer,sphere_fit_failed` | magnetic interference | move away from metal, redo |
-| `mag_rms_ut` above ~2 µT after a good run | metal nearby | relocate and recalibrate |
-| Yaw still drifts | gyro bias, or mag fit is old | rerun `CAL mag` |
+| `mag_rms_ut` above ~2 µT after a good run | metal nearby or poor coverage | relocate and recalibrate |
+| Yaw/heading is unreliable | magnetic disturbance, mounting offset, or an older fit | check the heading convention in [imu/ARCHITECTURE.md](imu/ARCHITECTURE.md#2-frame-conventions-read-this-before-touching-any-math), relocate, then rerun `CAL mag` |
 
 ## Storage
 

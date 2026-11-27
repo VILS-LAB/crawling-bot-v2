@@ -32,7 +32,10 @@ that motivated the rewrites, in the order they were discovered.
 | 4 | **Yaw was pure gyro integration** | Gen 2 | The complementary filter fused accel into roll/pitch only. Yaw had no absolute reference at all, so it drifted without bound. |
 | 5 | **Sampling shared the Arduino loop** | Gen 1, Gen 2 | `dt` was whatever `millis()` happened to give. OLED refresh, servo writes and OTA all perturbed it, and the estimator integrated that jitter as real rotation. |
 
-Gen 3 fixes all five. The rest of this document is the evidence.
+Gen 3 addresses those issues in its current design. The sections below preserve
+the historical implementation comparisons; use [ARCHITECTURE.md](./ARCHITECTURE.md)
+for authoritative behavior of the current source. Historical counts and test
+results describe the rewrite-era snapshot, not necessarily the current checkout.
 
 ---
 
@@ -242,14 +245,16 @@ graph LR
 * **Own filters.** `MedianFilter5` → `ButterworthFilter3` (2nd order, Q = 0.707)
   → `AdaptiveKalman3` (scalar Kalman whose measurement noise grows with the
   innovation squared). Applied to accel, gyro and mag.
-* **World-frame gravity removal.** `rotateBodyToWorld(roll, pitch, 0, accel,
-  worldAccel)` then a slowly-adapting `gravityReference` subtracted from world Z.
-  This is the fix for Gen 1's Defect 1.
+* **Gravity removal after rotation.** `rotateBodyToWorld(roll, pitch, 0, accel,
+  worldAccel)` then a slowly-adapting `gravityReference` subtracted from Z. The
+  transform uses yaw zero, so horizontal output is not fully yaw-aligned to the
+  estimator's world frame. This addressed Gen 1's body/world integration error.
 * **Real still detection.** 40-sample window, three independent checks
   (accel norm ±0.02 g, gyro < 0.5 °/s, accel vector std-dev < 0.004 g), each
   reported as a bit in `still_failure_mask`.
-* **Trust scheduling.** 1.0 while still, 0.0 while moving, 0.05 after 5 s of
-  continuous motion — so the accelerometer never fights real acceleration.
+* **Trust diagnostic.** Its target was 1.0 while still, 0.0 while moving and
+  0.05 after 5 s without a still interval. In the current implementation this
+  value is published but does not gate estimator accelerometer correction.
 * **Guided calibration with a quality gate.** Gyro: 2 500 samples, reject if
   σ > 0.20 °/s. Accel: six guided positions, reject if a face pair is closer
   than 0.50 g.
@@ -301,7 +306,8 @@ so a residual bias showed up directly as attitude drift.
 
 **No notch filter.** Only a fixed 2nd-order Butterworth.
 
-**No host tests.** Nothing could be verified without hardware.
+**No host tests.** The portable estimator and calibration math had no automated
+host-side checks; hardware bench checks were the only way to validate it then.
 
 ---
 
@@ -327,37 +333,41 @@ Thirteen files, 3 847 lines. Three of them are new:
 | `ImuAttitudeEstimator.cpp` | 184 | **new** |
 | `ImuAttitudeEstimator.h` | 109 | **new** |
 
-Plus `test/host/` (114 checks) and `docs/imu/`.
+Plus `test/host/` and `docs/imu/`. Test counts have since changed; current
+coverage and the way to run it are documented in [ARCHITECTURE.md](./ARCHITECTURE.md#11-testing) and [`test/host/README.md`](../../test/host/README.md).
 
 ### 3.2 The pipeline
 
 ```mermaid
 graph LR
-    A["MPU9250 raw"] --> B["PX4 calibration model<br/>full 3x3 accel matrix"]
-    B --> C["MedianFilter3"]
-    C --> D["NotchFilter<br/>disabled by default"]
-    D --> E["LowPassFilter2p<br/>gyro 40 Hz / accel 30 Hz"]
-    E --> F["PX4 attitude_estimator_q<br/>quaternion + integral bias"]
-    F --> G["rotateBodyToWorld<br/>frozen contract"]
-    G --> H["gravityReference"]
-    H --> I["still detection<br/>3-bit mask"]
-    I --> J["deadband + planar<br/>integration"]
+    A["MPU9250 / AK8963 raw"] --> B["calibration model"]
+    B --> C["unfiltered calibrated accel / gyro / mag"]
+    C --> D["attitude_estimator_q<br/>quaternion + integral bias"]
+    C --> E["diagnostic filters<br/>gyro median / notch / LPF;<br/>accel and mag LPF"]
+    D --> F["roll / pitch / yaw"]
+    C --> G["still detection<br/>3 checks"]
+    F --> H["rotate accel with yaw = 0"]
+    C --> H
+    H --> I["gravity reference + deadband"]
+    G --> I
+    I --> J["planar dead reckoning"]
 ```
 
-The whole chain runs in a **dedicated FreeRTOS task on core 1**
-(`IMU_TASK_CORE 1`, priority 5, 4 KiB stack). `loop()` only copies a snapshot.
+The estimator and dead-reckoning paths use unfiltered calibrated samples; the
+filtered paths are diagnostic telemetry. The processing runs in a dedicated
+FreeRTOS task on core 1 (`IMU_TASK_CORE 1`, priority 5, 4 KiB stack).
 
 ### 3.3 What Gen 3 fixed
 
 | Gen 2 defect | Gen 3 fix |
 |---|---|
 | Yaw had no absolute reference | `attitude_estimator_q` fuses the magnetometer into heading, with a spin-rate gain boost above 50 °/s |
-| Sampling shared the Arduino loop | Dedicated task on core 1; `dt` from `micros()`, jitter isolated from OLED/servo/OTA |
-| Accel calibration diagonal-only | Full 3×3 solve: `M = (A⁻¹)ᵀ` from the six averaged faces |
-| Mag calibration was the library's | LM sphere fit, then LM ellipsoid refinement, gated on residual |
+| Sampling shared the Arduino loop | Dedicated task on core 1; `dt` from `micros()`, isolated from loop work but sharing core 1 with OTA |
+| Accel calibration diagonal-only | Full 3×3 correction matrix: `M = (A⁻¹)ᵀ` from six averaged faces |
+| Mag calibration was the library's | LM sphere fit, then ellipsoid refinement accepted when residual does not worsen |
 | No estimator bias state | Integral gyro bias inside the estimator, frozen above 0.175 rad/s |
 | No notch filter | PX4 `NotchFilter` port (static, disabled by default) |
-| No host tests | 114 checks in `test/host/`, no hardware needed |
+| No host tests | host math, servo-motion and command-parser tests were added; current coverage is listed in [`test/host/README.md`](../../test/host/README.md) |
 | No residual reporting | `accel_rms_g`, `mag_rms_ut`, `mag_fit`, `est_init` appended to telemetry |
 
 ### 3.4 The one thing that did **not** change
@@ -377,12 +387,12 @@ rotation contract and the estimator agree by construction.
 |---|---|---|---|
 | Algorithm | Library Madgwick | Custom complementary | PX4 `attitude_estimator_q` |
 | State | Library quaternion (opaque) | Euler angles only | Quaternion + integral gyro bias |
-| Accel fused into | roll, pitch | roll, pitch | roll, pitch (gated 0.9–1.1 g) |
-| Mag fused into | heading (inside library) | **nothing** | heading, with spin-rate boost |
+| Accel correction | roll, pitch | roll, pitch | correction when accel norm is 0.9–1.1 g |
+| Mag correction | heading (inside library) | **nothing** | heading correction when mag is usable, with spin-rate boost |
 | Bias state | none | none (constant + clamped tracker) | integral, frozen > 0.175 rad/s |
-| Tunable | no | partially | fully, via `AttitudeEstimatorConfig` |
-| Initialization | library internal | first accel sample | TRIAD from accel + mag, seeded only when `0.5 g < \|a\| < 1.5 g` |
-| Yaw drift | bounded by library mag | **unbounded** | bounded by mag quality |
+| Tunable | no | partially | defaults in `AttitudeEstimatorConfig` |
+| Initialization | library internal | first accel sample | accel + mag, attempted when `0.5 g < \|a\| < 1.5 g` |
+| Yaw reference | library magnetometer | **gyro integration only** | magnetic heading correction when mag input is usable |
 
 ### 4.2 Gyroscope calibration
 
@@ -395,8 +405,11 @@ rotation contract and the estimator agree by construction.
 | Retries | none | none | 5 |
 | Persistence | none | NVS, magic `0x494D5532` v4 | NVS, magic `0x494D5533` v5 |
 
-The median/mean check is the meaningful addition: a slow drift during the run
-leaves σ small but shifts the mean, and only the median comparison catches it.
+The firmware's median/mean comparison uses the rolling median of the last three
+accepted samples, not a median of the complete sample distribution. It
+complements the sigma gate but is not a reliable detector of every slow or
+constant rotation. These checks do not prove that the robot was perfectly
+stationary throughout the run.
 
 ### 4.3 Accelerometer calibration
 
@@ -404,7 +417,7 @@ leaves σ small but shifts the mean, and only the median comparison catches it.
 |---|---|---|---|
 | Routine | `mpu->calibrateAccelGyro()` | own six-position | PX4 six-position |
 | Positions | library-defined | 6 guided | 6 guided, PX4 `AccelSide` order |
-| Model | bias + scale | bias + **diagonal** scale | bias + **full 3×3** matrix |
+| Model | bias + scale | bias + **diagonal** scale | bias + **full 3×3** correction matrix |
 | Cross-axis | no | no | yes |
 | Solve | min/max box | `bias = (pos+neg)/2`, `m[i][i] = 2/span` | `offset = (pos+neg)/2`, `M = (A⁻¹)ᵀ` |
 | Rejection | none | face span < 0.50 g | face span < 0.50 g |
@@ -456,38 +469,39 @@ estimator's `dt` compensation assumes it.
 
 | | Gen 1 | Gen 2 | Gen 3 |
 |---|---|---|---|
-| Body frame | library internal | FLU | FLU |
-| World frame | none | ENU-like | N-W-U |
+| Firmware body frame | library internal | FLU labels | FLU labels; sensor mounting is not separately transformed |
+| Estimator world frame | none | ENU-like | N-W-U |
 | `rotateBodyToWorld` | **absent** | present | present, **byte-identical** |
 | Gravity removal | library, body frame | world Z − `gravityReference` | world Z − `gravityReference` |
 | `gravityReference` update | — | α = 0.02 while static | α = 0.02 while static |
 | Yaw used in rotation | — | **0** (deliberate) | **0** (deliberate) |
 
-Yaw is passed as 0 to `rotateBodyToWorld` in both Gen 2 and Gen 3. That is not a
-bug: gravity is vertical, so the yaw component of the rotation cannot change the
-world Z component. Passing 0 avoids injecting yaw noise into the gravity
-estimate.
+Yaw is passed as 0 to `rotateBodyToWorld` in Gen 2 and Gen 3. For a pure yaw
+rotation the world-Z gravity component is invariant, and this also avoids making
+gravity removal depend on heading. The transform still rotates horizontal
+acceleration according to its documented contract; see [ROTATION_MATRIX.md](./ROTATION_MATRIX.md).
 
 ### 4.7 Still detection and ZUPT
 
 | | Gen 1 | Gen 2 | Gen 3 |
 |---|---|---|---|
 | Window | none | 40 samples | 40 samples |
-| Accel norm check | `\|lin_acc\| < 0.1 m/s²` | instantaneous `\|\|a\| − 1 g\| < 0.02 g` | 40-sample mean norm; enter below 0.03 g, leave above 0.05 g |
+| Accel norm check | `\|lin_acc\| < 0.1 m/s²` | instantaneous `\|\|a\| − 1 g\| < 0.02 g` | mean of per-sample norms over the 40-sample window; enter below 0.03 g, leave above 0.05 g |
 | Gyro check | `< 10 °/s` | `< 0.5 °/s` | same |
 | Std-dev check | none | `< 0.004 g` | same |
 | Failure reporting | none | 3-bit mask | 3-bit mask |
 | Time to declare static | 200 ms | 200 ms | 200 ms |
-| Trust schedule | none | 1.0 / 0.0 / 0.05 | same |
+| `trust` diagnostic target | none | 1.0 / 0.0 / 0.05 | same; published for telemetry, not consumed by current estimator |
 
-Gen 1's gate was effectively dead (see Defect 4). Gen 2's is the one that
-survived, and Gen 3 kept it unchanged — it works.
+Gen 1's gate was effectively dead (see Defect 4). Gen 3 retains the windowed
+checks, with hysteresis for the norm test; the host tests validate selected
+cases but do not prove the detector's behavior for every real motion.
 
 ### 4.8 Dead reckoning
 
 | | Gen 1 | Gen 2 | Gen 3 |
 |---|---|---|---|
-| Integration | body-frame accel | world-frame accel | world-frame accel |
+| Integration | body-frame accel | rotated accel with yaw=0 | rotated accel with yaw=0 (not yaw-aligned to estimator world) |
 | Deadband | none | mode 2, 0.01 m/s² | same |
 | Planar mode | no | yes (compile-time) | same |
 | ZUPT | zero velocity | zero velocity | same |
@@ -514,15 +528,17 @@ snapshot.
 | | Gen 1 | Gen 2 | Gen 3 |
 |---|---|---|---|
 | Format | human-readable text | CSV | CSV |
-| Columns | — | 41 | 51 |
-| Header | no | once at boot | at boot **and every 5 s** |
-| Write strategy | 34 `Serial.print` calls | 53 `Serial.print` calls | one `snprintf` + one `Serial.write` |
+| CSV fields including `IMU` tag | — | 41 | 51 |
+| Header | no | once at boot | serial at boot and periodically; TCP on stream enable |
+| Formatting/write strategy | many `Serial.print` calls | many `Serial.print` calls | one formatted CSV buffer; serial writes only when room is available |
 | Interval | 500 ms | 100 ms | 100 ms |
 | New columns | — | — | `ebx/eby/ebz`, `acc_norm_g`, `mag_norm`, `rate_hz`, `accel_rms_g`, `mag_rms_ut`, `mag_fit`, `est_init` |
 | Visualizer support | none | v1 + v2 | v1 + v2, both tolerant of extra columns |
 
-The 10 appended columns are strictly additive — Gen 2's 41 columns keep their
-positions, so an old visualizer still parses a Gen 3 line.
+The appended diagnostic fields preserve the earlier fields' positions. The
+current format has 51 CSV fields including the `IMU` tag (not 51 numeric
+measurements); parser compatibility is useful but does not guarantee every old
+client interprets newer data identically.
 
 ### 4.11 Persistence
 
@@ -539,7 +555,7 @@ positions, so an old visualizer still parses a Gen 3 line.
 
 | | Gen 1 | Gen 2 | Gen 3 |
 |---|---|---|---|
-| Host tests | none | none | 114 checks, `test/host/run.sh` |
+| Host tests | none | none | current counts vary as tests evolve; see [`test/host/README.md`](../../test/host/README.md) |
 | Rotation contract pinned | no | no | yes |
 | Estimator init pinned | no | no | yes |
 | Calibration round-trip | no | no | yes |
@@ -553,8 +569,9 @@ This is the summary; [PX4_PORT.md](./PX4_PORT.md) has the file-by-file map.
 
 ### 5.1 Same as PX4
 
-* `attitude_estimator_q` update equations, including the mag spin-rate gain
-  boost and the accel norm gate.
+* Selected `attitude_estimator_q` update and correction logic, including the
+  mag spin-rate gain boost and accel norm gate, with project-specific frame and
+  tuning changes described in [ARCHITECTURE.md](./ARCHITECTURE.md).
 * `LowPassFilter2p`, `NotchFilter`, `MedianFilter`, `AlphaFilter` coefficient
   math and reset seeding.
 * Six-position accelerometer solve.
@@ -570,10 +587,10 @@ This is the summary; [PX4_PORT.md](./PX4_PORT.md) has the file-by-file map.
 | Body / world frame | FRD / NED | FLU / N-W-U | Project convention; the rotation contract is frozen |
 | `ATT_W_GYRO_BIAS` | 0.1 | 0.02 | 0.1 is under-damped for a robot that sits still for minutes |
 | `ATT_BIAS_MAX` | 0.05 rad/s | 0.15 rad/s | GY-91 residual bias after a short calibration |
-| Accel matrix | diagonal only | full 3×3 | Hand-soldered GY-91 has real cross-axis terms |
+| Accel correction | diagonal scale retained in PX4 sensor correction | full 3×3 matrix retained here | Can represent cross-axis terms in the assembled breakout |
 | Mag units | Gauss | µT | Project convention; LM thresholds scaled ×100 |
-| Mag fit seeding | previous calibration | sample centroid + mean distance | No previous calibration on first run |
-| Mag radius window | 0.2–0.7 G | 20–70 µT | Same physical window, different units |
+| Mag fit seeding | upstream uses prior calibration where available | sample centroid + mean distance | Works without a prior fit |
+| Mag radius window | 0.2–0.7 G | 20–70 µT | Same physical window, converted units |
 | Notch | dynamic bank (ESC RPM / FFT) | single static notch, disabled | No RPM telemetry, no FFT budget |
 | Thermal calibration | full offset model | boot-time drift *detection* only | Out of scope; detection forces recalibration |
 | Gyro bias | estimator only | estimator **and** clamped runtime tracker | Handles slow drift between calibrations |
@@ -602,7 +619,7 @@ No matching input exists on this robot:
 | Keep `rotateBodyToWorld` verbatim | Use the estimator quaternion directly | It is the validated contract. Changing it would silently change what every plot means. |
 | Full 3×3 accel matrix | PX4's diagonal-only | The GY-91 is hand-soldered; cross-axis terms are real. Costs 6 floats and one 3×3 multiply. |
 | LM sphere + ellipsoid mag fit | Keep the library's `calibrateMag()` | The library's is a min/max box fit with no residual and no refinement. |
-| Dedicated task on core 1 | Keep running in `loop()` | Stable `dt`; OTA and OLED cannot starve the estimator. |
+| Dedicated task on core 1 | Keep running in `loop()` | Separates sampling from loop work; OTA also runs on core 1, so measured rate remains the indicator of actual scheduling. |
 | `gyroBiasWeight = 0.02` | PX4's 0.1 | 0.1 is under-damped for a stationary robot — the estimate overshoots and takes ~1 min to settle. |
 | Notch disabled by default | Enable at a fixed frequency | A crawler has no dominant vibration line; a mis-tuned notch only adds phase lag. |
 | Append-only CSV | Reorder / rename columns | Keeps both visualizers working across firmware revisions. |
@@ -616,18 +633,21 @@ No matching input exists on this robot:
 
 These are the places where Gen 3 behaves differently in a way you can observe:
 
-1. **Yaw now moves when you rotate the robot near metal.** That is the
-   magnetometer working. In Gen 2 yaw only moved with the gyro.
+1. **Yaw receives magnetic correction when a nonzero, finite mag vector is
+   available.** Magnetic interference can still make that correction wrong; a
+   mag fit residual alone does not prove the local field is undisturbed. In
+   Gen 2 yaw only moved with the gyro.
 2. **`est_init` may stay 0 for a second or two at boot.** The estimator waits
    for a plausible gravity vector before seeding. This is intentional.
 3. **`rate_hz` should read close to 200.** If it reads much lower, something is
    starving the IMU task — check `IMU_TASK_CORE` and the OTA path.
-4. **`accel_rms_g` above ~0.02 g means a bad accel calibration.** Redo it.
-5. **`mag_rms_ut` above ~2 µT means a bad mag calibration.** Redo it away from
-   metal.
-6. **`ebx/eby/ebz` should sit near zero and stay flat.** A slow ramp means the
-   calibration left bias behind.
-7. **The heading dial reads `(270 − yaw) mod 360`.** See
+4. **Large `accel_rms_g` or `mag_rms_ut` means a poor fit residual.** The
+   numerical values are diagnostics, not firmware acceptance gates; see
+   [CALIBRATION.md](./CALIBRATION.md) for interpretation and limits.
+5. **`ebx/eby/ebz` show the estimator's integral gyro-bias estimate.** A
+   nonzero value is not by itself proof of a bad calibration; interpret it with
+   the motion and attitude response.
+6. **The heading dial reads `(270 − yaw) mod 360`.** See
    [ARCHITECTURE.md](./ARCHITECTURE.md) §2 — the IMU is mounted with body +X
    pointing right, so the firmware's yaw tracks the robot's right-hand side.
 
@@ -651,35 +671,27 @@ At runtime, the fastest tell is the telemetry header:
 | Generation | Header starts with | Column count |
 |---|---|---|
 | Gen 1 | *(no CSV at all)* | — |
-| Gen 2 | `IMU,t_ms,dt,ax,...` | 41 |
-| Gen 3 | `IMU,t_ms,dt,ax,...` | 51 (ends with `est_init`) |
+| Gen 2 | `IMU,t_ms,dt,ax,...` | 41 fields |
+| Gen 3 | `IMU,t_ms,dt,ax,...` | 51 fields (ends with `est_init`) |
 
 If the last column is `pitchG`, you are on Gen 2. If it is `est_init`, you are
-on Gen 3.
+on Gen 3. Field counts include the leading `IMU` record tag.
 
 ---
 
-## 9. Rollback
+## 9. Historical rollback notes
 
-Gen 2 is preserved verbatim. To go back:
+Gen 2 source is preserved under [`archive/imu-pre-px4/`](../../archive/imu-pre-px4/)
+for comparison. This section is not a safe rollback procedure: restoring that
+code alone does not restore the matching callers, configuration, calibration
+records or other dependencies. Do not copy archived files into the active tree
+without reconstructing and testing a complete compatible revision. Prefer a
+reviewed Git revision/branch and verify the full firmware build and hardware
+behavior before using it.
 
-```bash
-# restore the whole previous implementation
-cp archive/imu-pre-px4/* lib/IMU/
-
-# or take it from the branch
-git checkout dev -- lib/IMU/
-```
-
-Two things to remember if you do:
-
-* `include/config.h` on Gen 3 defines `IMU_TASK_CORE` / `IMU_TASK_PRIORITY` /
-  `IMU_TASK_STACK`. Gen 2 ignores them, so leaving them in place is harmless.
-* `src/main.cpp` on Gen 3 calls `ahrs.startTask()`. Gen 2 has no such method —
-  revert `src/main.cpp` too, or the build will fail.
-
-The visualizers are forward-compatible: they parse both the 41-column and
-51-column formats, so they do not need to be reverted.
+The visualizers have historically tolerated both the earlier 41-field and
+current 51-field telemetry layouts; verify actual tool behavior if changing the
+format.
 
 ---
 
@@ -780,9 +792,7 @@ signal chain.
 
 | Check | Command | Result |
 |---|---|---|
-| Host math tests | `test/host/run.sh` | 114 checks, 0 failures |
-| Firmware build | `pio run -e esp32-s3-devkitm-1` | SUCCESS, no warnings |
-| RAM | — | 20.1 % (65 984 / 327 680 B) |
-| Flash | — | 24.9 % (833 897 / 3 342 336 B) |
-| Gen 2 archive fidelity | `diff` against `git show dev:lib/IMU/*` | identical, all 10 files |
-| Visualizer compatibility | both scripts against 41- and 51-column lines | parses both |
+| Host tests | `test/host/run.sh` | Historical rewrite-time verification only; for current results run the command and see [`test/host/README.md`](../../test/host/README.md) |
+| Firmware build and size | `pio run -e esp32-s3-devkitm-1` | Historical rewrite-time results; re-run against the current checkout before relying on them |
+| Gen 2 archive fidelity | comparison against the historical `dev` branch | Historical claim; not a current validation step |
+| Visualizer compatibility | parser behavior for historical 41- and 51-field formats | Historical check; current tests and source define the active format |

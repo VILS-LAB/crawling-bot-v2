@@ -1,16 +1,18 @@
 # IMU / AHRS architecture
 
-Everything about how this robot turns MPU9250 register reads into a usable
-attitude, a gravity-free acceleration and a short-term position estimate.
+This is the implementation guide for the current IMU/AHRS stack: how MPU9250
+and AK8963 readings become attitude, gravity-compensated acceleration and a
+short-horizon dead-reckoning estimate. The sensor calibration, selected filters
+and quaternion estimator are adapted from PX4; this is not a complete PX4 IMU
+runtime.
 
-The short version: **the signal chain is a port of PX4's IMU path**, with the
-project's own body→world rotation kept exactly as it was, because that rotation
-is the one that has been validated against the hardware and both visualizers.
+The project's body-to-world rotation is a separate, frozen transform contract
+used for gravity removal and visualization. The estimator also maintains a
+quaternion, but its output and this transform must use the same frame convention.
 
-This is the **third** generation of the IMU stack. If you want to know what the
-previous two did and why they were replaced, read
-[IMPLEMENTATION_HISTORY.md](./IMPLEMENTATION_HISTORY.md). This document only
-describes what runs today.
+This is the **third** generation of the IMU stack. [IMPLEMENTATION_HISTORY.md](./IMPLEMENTATION_HISTORY.md)
+keeps the prior-generation context; it is historical, so use current source and
+this architecture document for today's behavior.
 
 ---
 
@@ -41,34 +43,39 @@ Two hardware facts drive most of the design decisions:
 ## 2. Frame conventions (read this before touching any math)
 
 This is the single most common source of "the robot rotates the wrong way"
-bugs. The **firmware** uses one convention everywhere:
+bugs. The **estimator's firmware convention** is:
 
 ```
-body  frame : X forward, Y left,  Z up      (FLU, right-handed)
-world frame : X north,   Y west,  Z up      (N-W-U, right-handed)
-Euler       : R = Rz(yaw) * Ry(pitch) * Rx(roll)     (ZYX intrinsic)
-quaternion  : body -> world,  v_world = q * v_body * q^-1
-units       : accel m/s^2, gyro deg/s (rad/s inside the estimator),
-              mag uT, angles deg, position m, velocity m/s
+body frame  : X forward, Y left,  Z up      (FLU, right-handed)
+world frame : X north,   Y west,  Z up      (right-handed)
+Euler       : R = Rz(yaw) * Ry(pitch) * Rx(roll)
+quaternion  : body -> world
+units       : accel m/s^2, gyro deg/s at the AHRS interface (rad/s inside the
+              estimator), mag uT, angles deg, position m, velocity m/s
 ```
+
+These are firmware coordinate labels, not a statement that the GY-91's PCB
+axes physically point along chassis forward/left/up. The current mounting is
+shown below; calibration corrects sensor biases and scale/cross-axis errors,
+not an arbitrary mounting rotation.
 
 ### How the IMU is physically mounted (important)
 
-The firmware body frame is FLU, but on this robot the GY-91 is bolted down so
-that **its axes line up with the chassis**:
+The estimator labels its body frame FLU. On this robot, the GY-91 is mounted
+with its sensor/body axes mapped to the chassis as follows:
 
 ```
-robot forward  = body +Y
-robot right    = body +X
-robot up       = body +Z
+chassis forward = sensor/body +Y
+chassis right   = sensor/body +X
+chassis up      = sensor/body +Z
 ```
 
-So the firmware's "forward" axis (body +X) actually points at the robot's
-**right-hand side**, and the robot's nose is body **+Y**. Nothing in the
-firmware is wrong — the estimator is self-consistent — but any consumer that
-wants a compass heading must account for the mounting offset. The physical
-mounting is a 90° rotation, which shows up as a **270°** constant because yaw is
-counter-clockwise from north while a compass heading is clockwise from north:
+This is a sensor mounting convention, not a permutation performed by
+`readAndCalibrate()`: the firmware treats the measured axes as body X/Y/Z and
+calibration only estimates biases and scale/cross-axis correction. Consumers
+that want chassis compass heading must apply the mounting offset. The 90°
+physical relationship appears as a 270° constant because yaw is
+counter-clockwise from north while compass heading is clockwise from north:
 
 ```
 heading = (270 - yaw) mod 360
@@ -90,9 +97,9 @@ display = [[0, -1, 0],      # east  = -west
            [0,  0, 1]]      # up    =  up
 ```
 
-If you ever remount the IMU so body +X points forward, set
-`Config.heading_offset_deg = 0` in `tools/imu_visualizer_v2.py` and
-`HEADING_OFFSET_DEG = 0` in `tools/imu_visualizer.py`.
+If you remount the IMU, update and bench-validate the heading and display-frame
+conversion in both visualizers. The firmware currently has no configurable
+sensor-to-chassis mounting transform.
 
 ### Why this matters
 
@@ -140,12 +147,14 @@ See also [ROTATION_MATRIX.md](./ROTATION_MATRIX.md).
    readAndCalibrate │  accel: M·(raw − bias)      [g → m/s²]       │
         │           │  gyro : raw − bias          [deg/s]          │
         │           │  mag  : M·(raw − offset)    [mG → uT]        │
+        ├───────────┼── unfiltered calibrated accel/gyro/mag ──────┤
+        │           │  estimator input                             │
         ▼           │                                              │
-    runFilters      │  gyro : median(3) → notch → LPF2p(40 Hz)    │
-        │           │  accel: LPF2p(30 Hz)                        │
-        │           │  mag  : LPF2p(5 Hz)                         │
-        ▼           │                                              │
-   runEstimator     │  PX4 attitude_estimator_q port               │
+    runFilters      │  diagnostic fields: gyro median→notch→LPF2p  │
+        │           │  accel LPF2p; mag LPF2p                      │
+        └───────────┴── filtered values are not estimator inputs ──┘
+        ▼
+   runEstimator     │  PX4 attitude_estimator_q adaptation         │
         │           │  quaternion + integral gyro bias             │
         ▼           │                                              │
  updateStillDetection│ 40-sample accel window, 3 independent checks │
@@ -164,25 +173,25 @@ See also [ROTATION_MATRIX.md](./ROTATION_MATRIX.md).
 
 ### 3.1 Why a separate task
 
-The Arduino `loop()` also drives the OLED (I2C, ~10 ms per refresh), the servos
-and the OTA handler. If the estimator ran inside `loop()`, its `dt` would jitter
-by tens of milliseconds every time the display refreshed, and the quaternion
-integration would accumulate error proportional to that jitter.
+The Arduino `loop()` drives the OLED (I2C, ~10 ms per refresh), servos and
+command handling. Running estimation inside `loop()` would make its timing
+sensitive to that work. A dedicated task isolates it from the loop, though it
+still shares core 1 with the OTA handler and can contend with other tasks there.
 
 So the sampling loop lives in its own FreeRTOS task:
 
 ```c
-#define IMU_TASK_CORE     1   // core 0 hosts loopTask + WiFi/OTA
+#define IMU_TASK_CORE     1   // IMU and OTA tasks currently use core 1
 #define IMU_TASK_PRIORITY 5
 #define IMU_TASK_STACK    4096
 ```
 
-* **Core 1** is chosen because core 0 is where the Arduino `loopTask` and the
-  WiFi/OTA stack live. Keeping the IMU off core 0 means an OTA transfer cannot
-  starve the estimator.
-* If you ever need core 1 for something else, set `IMU_TASK_CORE` to `0`. The
-  task then shares core 0 with the loop and WiFi; it still works, but `dt`
-  becomes noisier. There is no need to disable OTA — the two coexist either way.
+* **Core 1** is selected by `IMU_TASK_CORE`; the OTA handler is also pinned to
+  core 1 at lower task priority. The IMU task uses priority 5, while the Arduino
+  loop runs separately; pinning does not guarantee zero scheduling jitter.
+* Changing `IMU_TASK_CORE` changes the contention profile. Re-test measured
+  `rate_hz` and estimator behavior on hardware if task placement or workloads
+  change; do not assume OTA can never affect sampling.
 * The task is **paused** (`taskPaused`) during calibration, because calibration
   needs exclusive access to the sensor and drives the OLED.
 * `ahrs.update()` in `loop()` is a cheap copy of the latest snapshot under a
@@ -257,14 +266,16 @@ Port of PX4's `gyro_calibration_worker` + the quality gate from
 2. Collect up to 2500 samples, rejecting any sample where `|accel|` is outside
    0.85–1.15 g or `|gyro|` > 8 °/s (i.e. the robot moved).
 3. Require ≥ 2000 accepted samples.
-4. Per axis, compute the mean and the standard deviation, **and** run a
-   `MedianFilter3` over the same samples.
-5. Reject the run if `sigma > 0.20 °/s` **or** `|median − mean| > 0.6 °/s`
-   (PX4's `maxoff = radians(0.6)`). Retry up to 5 times.
+4. Per axis, compute the mean and standard deviation across the accepted
+   samples. A rolling `MedianFilter3` is also updated for each sample; its final
+   median is the median of the last three accepted values, not of the full run.
+5. Reject if `sigma > 0.20 °/s` or if that final three-sample median differs
+   from the run mean by more than 0.6 °/s. Retry up to 5 times.
 
-The median/mean check is the important one: a slow, steady rotation has a small
-standard deviation but a large median/mean gap, so it catches motion that a
-variance test alone would miss.
+The median/mean comparison is an additional end-of-window consistency check,
+not a robust median of the full calibration run. It should not be relied on to
+detect every slow or constant rotation; keep the robot still throughout and
+interpret the acceptance limits as checks, not proof of a perfect calibration.
 
 ### 4.2 Accelerometer — `calibrateAccelerometer()`
 
@@ -272,12 +283,18 @@ Port of PX4's `do_accel_calibration`, six guided positions:
 
 | Side | Reference vector (g) |
 |---|---|
-| `X+` (tail down) | `( 1, 0, 0)` |
-| `X-` (nose down) | `(-1, 0, 0)` |
-| `Y+` (left) | `( 0, 1, 0)` |
-| `Y-` (right) | `( 0,-1, 0)` |
-| `Z+` (upside down) | `( 0, 0, 1)` |
-| `Z-` (right side up) | `( 0, 0,-1)` |
+| Prompt/side | Reference vector (g) |
+|---|---|
+| `X+` | `( 1, 0, 0)` |
+| `X-` | `(-1, 0, 0)` |
+| `Y+` | `( 0, 1, 0)` |
+| `Y-` | `( 0,-1, 0)` |
+| `Z+` | `( 0, 0, 1)` |
+| `Z-` | `( 0, 0,-1)` |
+
+The prompt means the named sensor/body axis points up. The firmware does not
+apply a separate sensor-to-chassis rotation, so do not infer a chassis face name
+from `X+`/`Y+` without checking the actual board mounting.
 
 For each side the firmware waits for the *correct* orientation (dominant axis
 matches, sign matches, `|a|` within 0.85–1.15 g, `|gyro|` < 3 °/s), then
@@ -318,7 +335,8 @@ Port of PX4's `mag_calibration` + `lm_fit.cpp`:
 4. Reject if the radius falls outside 20–70 µT (PX4's 0.2–0.7 G, converted).
 
 The result is stored as `magOffset` + `magMatrix`, and `magFieldNorm` keeps the
-fitted radius for the boot self-check.
+fitted radius for the boot self-check. The radius window is a plausibility
+check, not proof that the local magnetic field is undisturbed.
 
 > **Unit note.** PX4 works in Gauss. This project works in µT (1 G = 100 µT).
 > The LM thresholds in `ImuCalibration.cpp` are scaled accordingly — if you port
@@ -334,8 +352,8 @@ are checked:
 |---|---|
 | `| |accel| − 1 g |` | ≤ 0.05 g |
 | `|gyro|` (bias removed) | ≤ 1.0 °/s |
-| `|mag|` vs stored field norm | ≤ 20 % |
-| temperature drift since calibration | ≤ 15 °C |
+| corrected magnetometer norm vs stored field norm | ≤ 20 % (skipped if no positive stored norm) |
+| temperature drift since calibration | ≤ 15 °C (skipped if stored temperature ≤ 0 °C) |
 
 On success the robot goes straight to normal operation (`CAL,SELF_CHECK,ok`).
 On failure — or when nothing is stored — it boots **uncalibrated**: the servos
@@ -450,38 +468,36 @@ behaviour and keeps the pipeline safe against a nonsense cutoff.
 
 | Filter | PX4 source | Used for | Cutoff |
 |---|---|---|---|
-| `LowPassFilter2p` | `LowPassFilter2p.hpp` | accel, gyro, mag, linear accel | 30 / 40 / 5 / 7.5 Hz |
-| `NotchFilter` | `NotchFilter.hpp` | gyro (optional) | disabled by default |
-| `MedianFilter3` | `MedianFilter.hpp` | gyro spike rejection | — |
-| `AlphaFilter` | `AlphaFilter.hpp` | available for time-constant smoothing | — |
+| `LowPassFilter2p` | `LowPassFilter2p.hpp` | diagnostic accel, gyro and mag; gravity-free accel telemetry | 30 / 40 / 5 / 7.5 Hz |
+| `NotchFilter` | `NotchFilter.hpp` | diagnostic gyro path (optional) | disabled by default |
+| `MedianFilter3` | `MedianFilter.hpp` | diagnostic gyro path | window 3 |
+| `AlphaFilter` | `AlphaFilter.hpp` | available utility; not used in the active AHRS pipeline | — |
 
-### 6.1 Gyro chain
+### 6.1 Diagnostic filter paths
 
-```
-median(3) → notch (optional) → LPF2p(40 Hz)
-```
-
-* `median(3)` removes single-sample I2C glitches before they reach the notch,
-  which would otherwise ring.
-* The notch is **disabled by default** (`FILTER_GYRO_NOTCH_HZ = 0`). On a
-  crawler there is no dominant motor/prop frequency to notch out. If you add a
-  vibration source, set `FILTER_GYRO_NOTCH_HZ` and `FILTER_GYRO_NOTCH_BW_HZ`
-  (PX4's `IMU_GYRO_NF1_FRQ` / `IMU_GYRO_NF1_BW`).
-* 40 Hz is PX4's `IMU_GYRO_CUTOFF` default.
-
-### 6.2 Accel chain
+The AHRS computes filtered gyro, accel and mag values for telemetry and
+inspection:
 
 ```
-LPF2p(30 Hz)
+gyro : median(3) → notch (optional) → LPF2p(40 Hz)
+accel: LPF2p(30 Hz) (computed, not included in CSV)
+mag  : LPF2p(5 Hz)
 ```
 
-PX4's `IMU_ACCEL_CUTOFF` default. Note that PX4 applies this only to the signal
-sent to the controllers, not to the estimator. Here it is applied to the
-telemetry/`filteredAccel` path; the estimator is fed the **unfiltered**
-calibrated accel, matching PX4, so the estimator's own 0.9–1.1 g gate and the
-`k × accel` correction see the real signal.
+The estimator and dead-reckoning stages use the **unfiltered calibrated**
+accel, gyro and mag. The `filteredGyro` and `filteredMag` values are serialized;
+the filtered accel intermediate is computed but is not exposed in the CSV. The
+`flax..flaz` acceleration telemetry is separately low-passed at 7.5 Hz after
+gravity removal. Filtering exists for diagnostics, not as an estimator input.
 
-### 6.3 Linear acceleration chain
+* `median(3)` is on the diagnostic gyro path before the notch and low-pass.
+* The notch is **disabled by default** (`FILTER_GYRO_NOTCH_HZ = 0`). If you add
+  a vibration source with a known frequency, configure
+  `FILTER_GYRO_NOTCH_HZ` and `FILTER_GYRO_NOTCH_BW_HZ`.
+* The 30 Hz accel and 40 Hz gyro cutoffs correspond to PX4 defaults; the mag
+  low-pass is 5 Hz and the post-gravity-removal acceleration low-pass is 7.5 Hz.
+
+### 6.2 Linear acceleration chain
 
 ```
 rotateBodyToWorld → remove gravity → LPF2p(7.5 Hz)
@@ -491,7 +507,7 @@ The 7.5 Hz cutoff is the value the previous implementation used and the
 visualizers were tuned against. The **integration** for velocity/position uses
 the unfiltered value, so the dead-reckoning phase response is unchanged.
 
-### 6.4 What was removed
+### 6.3 What was removed
 
 The previous implementation used a per-axis
 `Median(5) → Butterworth → adaptive scalar Kalman` chain. It was replaced
@@ -502,8 +518,9 @@ because:
   a motion-tracking application;
 * three cascaded filters added ~30 ms of group delay to the gyro, which the
   estimator then integrated as real rotation;
-* PX4's chain is the one that has been validated on millions of flight hours,
-  and matching it makes the behaviour explainable against PX4 documentation.
+* The selected PX4 filter implementations have documented coefficient
+  behavior that can be compared with upstream source; this project still needs
+  its own validation on the robot.
 
 The old sources are kept in `archive/imu-pre-px4/` for reference.
 
@@ -511,9 +528,9 @@ The old sources are kept in `archive/imu-pre-px4/` for reference.
 
 ## 7. Still detection and ZUPT
 
-A 40-sample sliding window over the calibrated accel (in g) produces three
-independent checks. The mean of the instantaneous acceleration norms, not
-the norm of the window mean, is used for bit 0:
+A 40-sample sliding window over calibrated acceleration (in g) is used for
+three checks. For the magnitude check, the firmware averages each sample's
+acceleration norm (not the norm of the window's mean vector):
 
 | Bit | Check | Limit |
 |---|---|---|
@@ -521,31 +538,35 @@ the norm of the window mean, is used for bit 0:
 | 1 | `|gyro|` | < 0.5 °/s |
 | 2 | accel vector standard deviation | < 0.004 g |
 
-`still = (mask == 0)`. After 200 ms of continuous stillness the robot is
-declared static and velocity is zeroed (ZUPT). The mask is published so the
-visualizer can show *which* check is failing.
+The magnitude threshold is hysteretic: enter still below 0.03 g error and
+remain still until it exceeds 0.05 g. `still = (mask == 0)` only after the full
+40-sample standard-deviation window is available. After 200 ms of continuous
+passing checks the robot is declared static and velocity is zeroed (ZUPT). The
+mask is published so a client can inspect which check is failing.
 
-**Trust.** A smoothed 0..1 value that gates how much the accelerometer is
-allowed to correct the attitude:
-
-* `1.0` while still,
-* `0.0` while moving,
-* `0.05` if it has been moving for more than 5 s (a slow fallback so a
-  long-duration motion cannot leave the attitude uncorrected forever).
+**Trust diagnostic.** A smoothed 0..1 value is published for clients and
+visualizers: its target is `1.0` while still, `0.0` while moving, and `0.05`
+after 5 s without a still interval. This value is not currently passed into the
+estimator; accelerometer fusion is controlled by the estimator's 0.9–1.1 g
+magnitude gate (§5.1). Do not interpret `trust` as the actual fusion weight.
 
 ---
 
 ## 8. Dead reckoning
 
 ```
-worldAccel = rotateBodyToWorld(roll, pitch, 0, accel)   # yaw is irrelevant for gravity
+worldAccel = rotateBodyToWorld(roll, pitch, 0, accel)
 linearAccel.xy = worldAccel.xy
 linearAccel.z  = worldAccel.z − gravityReference
 ```
 
-`gravityReference` is a slow (alpha 0.02) estimate of the world-Z gravity
-magnitude, updated only while still. It absorbs the small constant Z offset that
-would otherwise integrate into unbounded vertical drift.
+The current implementation deliberately supplies yaw zero: this levels the
+acceleration using roll/pitch and removes gravity from Z, but does **not** rotate
+horizontal acceleration by the estimator's yaw. Therefore `lax..laz` and the
+integrated position should not be treated as a fully yaw-aligned world-frame
+navigation solution. `gravityReference` is a slow (alpha 0.02) estimate of the
+vertical gravity component, updated only while still; it absorbs a small
+constant Z offset that would otherwise integrate into drift.
 
 Then, only while moving:
 
@@ -558,17 +579,24 @@ p += v · dt
 
 `PLANAR_MODE` forces `vz = pz = 0`, which is correct for a ground crawler.
 
-**This is dead reckoning, not a position solution.** Double-integrating an IMU
-drifts cubically with time; expect centimetres over a few seconds and metres
-over a minute. It exists for short-term motion cues and for the visualizer's
-top-down plot, not for navigation.
+**This is dead reckoning, not a position solution.** Accelerometer bias and
+attitude error accumulate when integrating acceleration twice; the estimate is
+not bounded by an external position reference and is unsuitable for navigation.
+It is provided only as a short-term motion cue/visualization. `PLANAR_MODE` is
+currently enabled at compile time, so vertical velocity and position are forced
+to zero; reported planar coordinates are still not a position fix.
 
 ---
 
 ## 9. Telemetry contract
 
-One CSV line per `TELEMETRY_INTERVAL_MS` (100 ms), plus a header line at boot
-and every 5 s:
+The command server formats one 51-field CSV frame for each stream interval,
+including the `IMU` tag.
+USB serial defaults to 10 Hz (`TELEMETRY_INTERVAL_MS = 100 ms`); each TCP client
+starts with streaming off and sets its own rate with `STREAM`. Serial headers
+are emitted at boot and periodically, while a TCP header is sent when that
+client enables streaming. The requested stream rate is capped at 50 Hz and the
+achieved delivery rate may be lower if the device or client cannot keep up:
 
 ```
 IMU,t_ms,dt,ax,ay,az,lax,lay,laz,flax,flay,flaz,gx,gy,gz,gbx,gby,gbz,
@@ -577,18 +605,16 @@ moving,still,still_failure_mask,stdA,trust,rollG,pitchG,
 ebx,eby,ebz,acc_norm_g,mag_norm,rate_hz,accel_rms_g,mag_rms_ut,mag_fit,est_init
 ```
 
-50 columns. **New columns are only ever appended**, so:
-
-* an older visualizer keeps working (it ignores trailing columns),
-* a newer visualizer can read older firmware (missing columns show as `NaN`).
-
-The line is built with a single `snprintf` into a 512-byte buffer and sent with
-one `Serial.write`, so the visualizer never sees a half line.
+There are 51 CSV fields including the leading `IMU` record tag. The layout is
+append-only by convention, and the included visualizers tolerate missing or
+extra trailing values. The telemetry formatter uses one `snprintf`; serial
+writes only a complete frame when the transmit buffer has room, while TCP
+streaming drops a stalled client rather than blocking the main loop.
 
 | Column group | Meaning |
 |---|---|
 | `ax..az` | calibrated accel, m/s², body |
-| `lax..laz` | gravity-free accel, m/s², world (unfiltered) |
+| `lax..laz` | gravity-compensated acceleration, m/s², rotated with roll/pitch and yaw set to zero (unfiltered; not fully world/yaw aligned) |
 | `flax..flaz` | same, low-passed at 7.5 Hz |
 | `gx..gz` | bias-corrected gyro, °/s, body |
 | `gbx..gbz` | calibration gyro bias, °/s |
@@ -600,7 +626,7 @@ one `Serial.write`, so the visualizer never sees a half line.
 | `moving,still` | 0/1 |
 | `still_failure_mask` | bit *i* = still check *i* failing |
 | `stdA` | accel vector std-dev over the still window, g |
-| `trust` | 0..1 accel fusion weight |
+| `trust` | 0..1 smoothed diagnostic target; not currently consumed by the estimator |
 | `rollG,pitchG` | gyro-only shadow attitude, ° (drift diagnostic) |
 | `ebx..ebz` | **estimator** integral gyro bias, °/s |
 | `acc_norm_g` | `|accel|` in g |
@@ -641,7 +667,8 @@ Both tools live in `tools/` and read the same CSV.
 
 Both were updated for the new columns:
 
-* `imu_visualizer.py` — `FIELDS` extended to all 50 columns, a
+* `imu_visualizer.py` — `FIELDS` extended to all 50 telemetry values, plus the
+  leading `IMU` record tag; a
   `REQUIRED_FIELDS` set so it tolerates older/newer firmware, and the status
   line now shows the measured sampling rate.
 * `imu_visualizer_v2.py` — `DEFAULT_FIELDS` extended, the parser accepts both
@@ -669,8 +696,8 @@ python3 tools/imu_visualizer_v2.py --port auto
 test/host/run.sh
 ```
 
-Compiles the **real** firmware math sources with the system C++ compiler and
-runs 79 assertions covering:
+Compiles the **real** firmware math sources with the host C++ compiler and
+runs assertions covering:
 
 * quaternion ↔ matrix ↔ Euler round trips,
 * the frozen `rotateBodyToWorld` contract (including that the matrix form
@@ -682,8 +709,10 @@ runs 79 assertions covering:
 * the LM sphere and ellipsoid fits recovering a known offset and radius,
 * end-to-end yaw tracking against a synthetic ground truth.
 
-This is the fastest way to catch a regression in the math — it runs in about a
-second and needs no robot.
+The same script also runs servo-motion and command-parser host tests. Host tests
+exercise portable math and logic only; they do not exercise Arduino hardware,
+I2C contention, FreeRTOS scheduling, the live guided-calibration UI or sensor
+mounting. See [`test/host/README.md`](../../test/host/README.md) for exact scope.
 
 ### Firmware build
 
@@ -697,11 +726,11 @@ pio run -e esp32-s3-devkitm-1
    `rate_hz ≈ 200`, `still = 1`.
 2. **Roll the robot 30°** → `roll ≈ 30` within ~2 s, `pitch` stays near 0.
 3. **Yaw the robot left by hand** → `yaw` decreases (project convention).
-4. **Lift the robot and hold it** → `still = 0`, `trust` falls to 0,
-   `rollG/pitchG` start to drift away from `roll/pitch` (that gap is the
-   estimator doing its job).
-5. **`ebx/eby/ebz`** should sit near zero. A persistent non-zero value means
-   the gyro calibration left a bias behind — rerun `CAL gyro`.
+4. **Lift the robot and hold it** → `still = 0`, the published `trust`
+   diagnostic falls toward 0, and `rollG/pitchG` can drift away from
+   `roll/pitch`. The estimator itself does not currently use `trust`.
+5. Interpret `ebx/eby/ebz` as the estimator's integral bias state, not a direct
+   calibration pass/fail indicator.
 
 ---
 
@@ -726,17 +755,21 @@ pio run -e esp32-s3-devkitm-1
 
 ## 13. Known limitations
 
-* **Yaw drifts without a good mag calibration.** The AK8963 is noisy and sits
-  next to the motor wiring. If `mag_rms_ut` is above ~2 µT, redo the mag
-  calibration away from metal.
+* **Yaw depends on a usable magnetic field.** The AK8963 is sensitive to
+  nearby ferrous material and current-carrying wiring. A good fit residual does
+  not rule out a locally distorted field; compare `mag_norm`, rotate the robot
+  away from interference and repeat calibration if heading is unreliable.
 * **Dead reckoning drifts.** By construction. See §8.
 * **No vibration/FFT notch.** If you add a motor with a strong line, set
   `FILTER_GYRO_NOTCH_HZ` manually; there is no dynamic notch bank.
 * **No thermal calibration.** PX4 has a full thermal offset model. Here the
   boot self-check only *detects* a large temperature change and forces a
   recalibration.
+* **Linear acceleration ignores estimator yaw.** The current dead-reckoning
+  transform uses yaw zero, so horizontal components and positions are not a
+  fully world-aligned navigation estimate.
 * **`PLANAR_MODE` is compile-time.** A flying or climbing variant would need it
-  as a runtime flag.
+  as a runtime flag and would need a more complete gravity/position solution.
 
 ---
 
