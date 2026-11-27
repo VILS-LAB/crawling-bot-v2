@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Plot the CSV telemetry emitted by the crawling bot and show its attitude."""
+"""Plot the CSV telemetry emitted by the crawling bot and show its attitude.
+
+NOTE: this tool is legacy. ``tools/robot_visualizer.py`` supersedes it with
+consolidated charts, a 3D body, a heading dial, a pass/fail health panel and
+buttons for every protocol command. Nothing in the repository depends on this
+file; it is kept only for its compact single-window layout.
+"""
 
 import argparse
 import math
@@ -128,6 +134,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("port", help="Serial port, e.g. /dev/cu.usbmodemXXXX")
     parser.add_argument("--baud", type=int, default=115200)
+    parser.add_argument("--hz", type=int, default=50,
+                        help="telemetry rate to request from the robot (0-50)")
     parser.add_argument("--samples", type=int, default=100,
                         help="Number of recent samples to keep (default: 100)")
     args = parser.parse_args()
@@ -138,6 +146,10 @@ def main():
         raise SystemExit("Install dependencies first: python3 -m pip install pyserial matplotlib")
 
     serial_port = serial.Serial(args.port, args.baud, timeout=0.1)
+    # The robot only streams when asked, and it remembers the last request per
+    # transport, so a previous `STREAM 0` leaves this tool with a silent port.
+    # Ask explicitly instead of assuming the stream is already running.
+    serial_port.write(b"STREAM %d\n" % args.hz)
     samples = deque(maxlen=max(1, args.samples))
     figure = plt.figure(figsize=(14, 10))
     grid = figure.add_gridspec(3, 4)

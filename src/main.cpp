@@ -76,6 +76,12 @@ void showUncalibratedScreen()
 
 void setup()
 {
+    // The S3 logs over native USB-CDC, whose buffers default to 256 B. One
+    // telemetry line is ~440 B, so every write used to block the loop until the
+    // USB FIFO drained, capping the stream well below the requested rate. The
+    // sizes are compile-time on this core, so apply them before begin().
+    Serial.setRxBufferSize(SERIAL_RX_BUFFER);
+    Serial.setTxBufferSize(SERIAL_TX_BUFFER);
     Serial.begin(SERIAL_BAUD_RATE);
     delay(100);
 

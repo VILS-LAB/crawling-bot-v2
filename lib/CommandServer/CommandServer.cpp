@@ -529,9 +529,18 @@ void CommandServer::emitStream()
         const uint32_t intervalMs = 1000UL / serialStreamHz;
         if (now - serialLastStreamMs >= intervalMs)
         {
-            serialLastStreamMs = now;
+            // Only emit when the whole line fits, so a host that stops reading
+            // cannot stall the loop (and with it the watchdog feed and the
+            // servo ramp). Skipping a frame loses one sample, not liveness.
             if (formatOnce())
-                Serial.write(reinterpret_cast<const uint8_t *>(line), bytes);
+            {
+                const int room = Serial.availableForWrite();
+                if (room < 0 || static_cast<size_t>(room) >= bytes)
+                {
+                    serialLastStreamMs = now;
+                    Serial.write(reinterpret_cast<const uint8_t *>(line), bytes);
+                }
+            }
         }
     }
 

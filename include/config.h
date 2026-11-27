@@ -22,6 +22,12 @@
 // Network Configuration
 #define AP_PASSWORD "12345678"
 #define SERIAL_BAUD_RATE 115200
+// USB-CDC ring buffers. The core default is 256 B for each, which is smaller than
+// a single telemetry line (~440 B); a 50 Hz stream then blocks the loop on every
+// write and the achieved rate collapses. Bigger buffers let the stream be queued
+// without waiting for the host.
+#define SERIAL_RX_BUFFER 1024
+#define SERIAL_TX_BUFFER 8192
 #define ENABLE_SERVOS 1
 
 // Command protocol.

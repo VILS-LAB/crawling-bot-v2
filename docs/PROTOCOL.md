@@ -98,11 +98,19 @@ OK stream=0
 
 * `STREAM` sets the rate **for the transport it arrived on**. The USB serial
   port streams at 10 Hz by default; every TCP client starts quiet.
+  **A client is expected to ask.** Connecting and waiting is not enough, and over
+  serial the previous session's rate still applies (including `0`). Any tool that
+  only listens can therefore appear to see "no data" on a perfectly good link.
 * The rate is clamped to `PROTOCOL_MAX_STREAM_HZ` (50), which is the IMU task
   rate: asking for more just repeats samples.
-* Frames keep the existing `IMU,` CSV layout, so
-  `tools/imu_visualizer.py` and `tools/imu_visualizer_v2.py` work over TCP with
-  no changes (point them at the socket instead of the serial port).
+* **`STREAM <hz>` is a request, not a guarantee.** A frame is ~440 bytes, so
+  50 Hz needs ~220 kB/s. USB-CDC and WiFi both deliver that on a good link, but
+  the *achieved* rate is limited by the slowest part of the path (host scheduling,
+  a busy WiFi channel, a slow reader). Measure it: it is the `rx` number in
+  `tools/robot_visualizer.py`, and the viewer warns when the link is the limit.
+  Lower `STREAM` rather than assuming lost data.
+* Frames keep the existing `IMU,` CSV layout, so every tool under `tools/`
+  reads them unchanged (point the tool at the socket instead of the port).
 * A client that stops reading is disconnected rather than allowed to stall the
   robot. The byte stream is never cut mid-line.
 

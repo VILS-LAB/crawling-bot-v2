@@ -23,10 +23,21 @@ Firmware versions, newest first. Dates are release dates.
   typed `Snapshot`/`ImuFrame` results, deadlines, event/reply separation,
   streaming iterator, calibration with progress, plus runnable scripts and 20
   tests that run against a fake robot.
+* **`crawlingbot` on PyPI.** The Python client is now a real distribution, so
+  students install it with `pip install crawlingbot` instead of copying files.
+  Packaging lives in [examples/python/pyproject.toml](examples/python/pyproject.toml);
+  the release process is in [docs/PYPI.md](docs/PYPI.md), automated by
+  [.github/workflows/publish-python-client.yml](.github/workflows/publish-python-client.yml)
+  with trusted publishing.
 * **Command protocol** on both USB serial and TCP port 4242:
   `PING`, `ID`, `SETID`, `GET`, `STREAM`, `ACT`, `STOP`, `PARK`, `CAL`.
 * **Hardware documentation structure** under [docs/hardware/](docs/hardware/README.md)
   with placeholders for 3D print files, PCB design and the BOM spreadsheet.
+* **`tools/robot_visualizer.py`**, a robot dashboard and command console: the
+  twelve charts of the old IMU visualizer consolidated into six, plus a 3D body,
+  heading dial, pass/fail health panel and a button for every protocol command.
+  Reads serial, TCP, a recorded CSV, or synthetic `--demo` data. See
+  [tools/README.md](tools/README.md).
 * `CHANGELOG.md` (this file).
 
 ### Fixed
@@ -45,6 +56,12 @@ Firmware versions, newest first. Dates are release dates.
 * `lib/Training` placeholder library.
 * The legacy single-key IMU console (`q`, then `1`–`6`); `CAL` replaces it.
 * `*.fa.md` documentation mirrors (see *Changed*).
+
+### Deprecated
+
+* `tools/imu_visualizer.py` and `tools/imu_visualizer_v2.py` are superseded by
+  `tools/robot_visualizer.py`. They still run and nothing depends on them; they
+  are kept for their raw-vs-filtered gyro view and interactive sliders.
 
 ## 2026-11-26 — firmware baseline
 

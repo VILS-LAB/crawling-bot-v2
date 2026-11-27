@@ -109,9 +109,14 @@ Three line families, all ASCII, all greppable:
 | Prefix | Meaning | Consumer |
 |---|---|---|
 | `OK` / `ERR` | reply to exactly one command | the client that asked |
-| `IMU,` | telemetry frame (CSV) | visualizers, CSV logs |
+| `IMU,` | telemetry frame (CSV) | `tools/robot_visualizer.py`, CSV logs |
 | `CAL,` / `CALRESULT,` | calibration progress and outcome | the calibrating client |
 | everything else | diagnostics: `WARN,`, `ERROR,`, `HEALTH,`, `PROTOCOL,` | a human reading the log |
+
+`tools/robot_visualizer.py` consumes all four families at once: `IMU,` becomes
+the charts, `HEALTH,`/`CAL,`/`PROTOCOL,` become its health panel, and `OK`/`ERR`
+become the reply shown beside each console button. That is why the viewer can
+report *why* something is wrong rather than only *that* it is.
 
 The diagnostics are stable enough to grep. Examples:
 

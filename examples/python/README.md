@@ -1,5 +1,7 @@
 # Python client for the Crawling Bot
 
+[![PyPI](https://img.shields.io/pypi/v/crawlingbot.svg)](https://pypi.org/project/crawlingbot/)
+
 A small, dependency-light client for the robot's serial/TCP protocol. Use it as
 the reference implementation when you write your own client in another language.
 
@@ -12,17 +14,15 @@ the reference implementation when you write your own client in another language.
 
 ## Install
 
-Nothing to install for TCP use — copy the folder or add it to `PYTHONPATH`:
-
 ```bash
-cd examples/python
-python hello_robot.py --host 192.168.4.1
+pip install crawlingbot            # TCP only, no third-party dependencies
+pip install "crawlingbot[serial]"  # adds pyserial for Robot.serial(...)
 ```
 
-For serial:
+That is all you need — the scripts in this folder are optional extras:
 
 ```bash
-pip install pyserial
+python hello_robot.py --host 192.168.4.1
 python hello_robot.py --serial /dev/cu.usbmodem1101 --list-ports
 ```
 
@@ -40,8 +40,6 @@ with Robot.tcp("192.168.4.1") as bot:
     print(snap.calibrated, snap.down, snap.down_target)
 
     bot.act(120, 60)             # clamped targets come back
-    bot.stop()
-    bot.park()
 ```
 
 Streaming, with automatic cleanup:
@@ -104,4 +102,5 @@ bot.command("GET")       # raw key/value dict, raises RobotError on ERR
 bot.command("CAL gyro")
 ```
 
-See [../../docs/PROTOCOL.md](../../docs/PROTOCOL.md) for the wire format.
+See [docs/PROTOCOL.md](https://github.com/VILS-LAB/crawling-bot-v2/blob/main/docs/PROTOCOL.md)
+for the wire format.

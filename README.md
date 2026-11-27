@@ -7,6 +7,10 @@ network, and it exposes everything a controller needs over one ASCII protocol on
 laptop, in a notebook, in Python, C++, MATLAB, JavaScript — and talks to the
 robot over WiFi.
 
+> 🐍 **Writing a Python controller?** `pip install "crawlingbot[serial]"` and skip
+> to [docs/languages/python.md](docs/languages/python.md). Releasing the package
+> is documented in [docs/PYPI.md](docs/PYPI.md).
+
 <!-- Photograph placeholder. Drop the assembled-robot photo at
      docs/hardware/img/robot-overview.jpg, then uncomment the image tag that
      used to be here (an alt-text + path markdown image). -->
@@ -117,7 +121,7 @@ lib/
   SystemWatchdog/       hardware task watchdog
 include/config.h        pins, rates, limits, tuning
 test/host/              math + protocol tests that run on a PC
-tools/                  visualizers and log analysis
+tools/                  robot visualizer, log analysis, tests
 examples/python/        reference client and runnable scripts
 docs/                   see below
 ```
@@ -137,7 +141,9 @@ docs/                   see below
 | [docs/imu/](docs/imu/README.md) | the IMU/AHRS design in depth |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | firmware internals: tasks, buses, logging, failure modes |
 | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | repo conventions, tests, release process |
+| [docs/PYPI.md](docs/PYPI.md) | publish the `crawlingbot` Python package to PyPI |
 | [docs/MIGRATION.md](docs/MIGRATION.md) | history: Arduino → PlatformIO, student-code → client |
+| [tools/README.md](tools/README.md) | watch the robot live: dashboard, health panel, command buttons |
 | [docs/languages/](docs/languages/README.md) | client snippets per language |
 
 ## Tests

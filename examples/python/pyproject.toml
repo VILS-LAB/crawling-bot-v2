@@ -1,0 +1,71 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "crawlingbot"
+description = "Python client for the Crawling Bot V2 serial/TCP command protocol"
+readme = "README.md"
+requires-python = ">=3.8"
+authors = [{ name = "Amirali", email = "amirali.dst.lll@gmail.com" }]
+keywords = ["robotics", "esp32", "robot", "telemetry", "serial", "tcp", "education"]
+license = "MIT"
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Education",
+  "Intended Audience :: Developers",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.8",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Education",
+  "Topic :: Scientific/Engineering",
+  "Typing :: Typed",
+]
+dependencies = []
+dynamic = ["version"]
+
+[project.optional-dependencies]
+serial = ["pyserial>=3.5"]
+dev = [
+  "build>=1.2",
+  "pyserial>=3.5",
+  "pytest>=8",
+  "twine>=7",
+]
+
+[project.urls]
+Homepage = "https://github.com/VILS-LAB/crawling-bot-v2"
+Documentation = "https://github.com/VILS-LAB/crawling-bot-v2/blob/main/docs/languages/python.md"
+Repository = "https://github.com/VILS-LAB/crawling-bot-v2"
+Changelog = "https://github.com/VILS-LAB/crawling-bot-v2/blob/main/CHANGELOG.md"
+"Protocol docs" = "https://github.com/VILS-LAB/crawling-bot-v2/blob/main/docs/PROTOCOL.md"
+
+[tool.hatch.version]
+path = "crawlingbot/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["crawlingbot"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"crawlingbot/py.typed" = "crawlingbot/py.typed"
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "crawlingbot",
+  "tests",
+  "README.md",
+  "hello_robot.py",
+  "walk_legs.py",
+  "stream_telemetry.py",
+  "calibrate.py",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]

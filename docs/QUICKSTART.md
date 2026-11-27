@@ -16,7 +16,7 @@ Full detail and the pin rationale: [HARDWARE.md](HARDWARE.md).
 ## 2. Flash it
 
 ```bash
-git clone https://github.com/amirali-lll/crawling-bot-v2.git
+git clone https://github.com/VILS-LAB/crawling-bot-v2.git
 cd crawling-bot-v2
 pio run --target upload
 pio device monitor -b 115200
@@ -43,7 +43,15 @@ change it later, send `SETID <1..8>` and reboot.
 
 ## 4. Say hello
 
-No SDK, no build step — the reference client is plain Python:
+No SDK, no build step — the reference client is plain Python. Install it from
+PyPI:
+
+```bash
+pip install "crawlingbot[serial]"   # drop [serial] if you only use Wi-Fi
+python -c "from crawlingbot import Robot; print(Robot.tcp('192.168.4.1').ping())"
+```
+
+Or run the bundled script straight from the repository:
 
 ```bash
 cd examples/python

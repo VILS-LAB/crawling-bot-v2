@@ -4,13 +4,8 @@ The reference client is in [`examples/python`](../../examples/python/README.md)
 and is covered by tests. Prefer it over writing a client from scratch.
 
 ```bash
-cd examples/python
-python hello_robot.py --host 192.168.4.1
-python walk_legs.py  --host 192.168.4.1
-python stream_telemetry.py --csv run.csv --seconds 30
+pip install "crawlingbot[serial]"   # or just "crawlingbot" for Wi-Fi only
 ```
-
-Using the library directly:
 
 ```python
 from crawlingbot import Robot
@@ -20,9 +15,16 @@ with Robot.tcp("192.168.4.1") as bot:
     snap = bot.snapshot()
     print(snap.roll, snap.pitch, snap.yaw, snap.calibrated)
     bot.act(120, 60)
+```
 
-# serial instead of TCP (needs pyserial)
-# with Robot.serial("/dev/cu.usbmodem1101") as bot: ...
+The runnable scripts in `examples/python` are not part of the installed package —
+clone the repository to use them:
+
+```bash
+cd examples/python
+python hello_robot.py --host 192.168.4.1
+python walk_legs.py  --host 192.168.4.1
+python stream_telemetry.py --csv run.csv --seconds 30
 ```
 
 Streaming:

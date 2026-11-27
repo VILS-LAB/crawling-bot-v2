@@ -25,6 +25,16 @@ cd examples/python && python -m unittest discover -s tests  # client tests
 pio run --target upload --upload-port ESP32-OTA-<n>.local  # over the air
 ```
 
+The Python client's packaging tools (`build`, `twine`, `pytest`) are not part of
+a bare virtualenv. Install them into this repository's `env/` once:
+
+```bash
+cd examples/python && ../../env/bin/python -m pip install -e ".[dev]"
+cd examples/python && ../../env/bin/python -m build   # then twine check dist/*
+```
+
+See [PYPI.md](PYPI.md) for the full release path.
+
 ## Layout rules
 
 | Directory | Owns | Must not |

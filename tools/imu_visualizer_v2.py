@@ -3,6 +3,13 @@
 Crawling Bot V2 - live IMU visualizer  (matplotlib)
 ===================================================
 
+NOTE: this tool is legacy. `tools/robot_visualizer.py` supersedes it: same
+telemetry, but consolidated charts, a 3D body, a heading dial, a pass/fail
+health panel and buttons for every protocol command. This file is kept only
+because it draws raw and filtered gyro separately and has an interactive
+slider panel; nothing in the repository depends on it.
+
+
     python imu_visualizer.py --demo                      # fake robot, no hardware needed
     python imu_visualizer.py --port auto                 # find the ESP32 automatically
     python imu_visualizer.py --port /dev/cu.usbmodem1101 --baud 115200 --log
@@ -91,6 +98,7 @@ class Config:
     use_blit: bool = True         # redraw only the moving lines (fast). If the window ever
                                   # looks glitchy on your machine set False (slower, safest).
     max_rate_hz: int = 250        # buffer size = buffer_s * max_rate_hz samples
+    stream_hz: int = 50           # telemetry rate requested from the robot on connect
     buffer_s: float = 120.0       # how much history is kept in RAM (>= largest window)
 
     # ---- fixed Y ranges ----------------------------------------------------
@@ -427,6 +435,9 @@ class SerialSource(Source):
                 with serial.Serial(port, self.cfg.baud, timeout=0.05) as ser:
                     self.state = f"serial {port} @ {self.cfg.baud}"
                     self.flush_out()               # NEW: drop commands queued while disconnected
+                    # The robot only streams on request and remembers the last
+                    # one, so a previous `STREAM 0` leaves this tool silent.
+                    ser.write(f"STREAM {self.cfg.stream_hz}\n".encode("ascii"))
                     buf = b""
                     while not self.stop_evt.is_set():
                         try:                       # NEW: send pending commands

@@ -19,3 +19,12 @@ __pycache__/
 # example client artifacts
 examples/python/**/__pycache__/
 *.pyc
+
+# python packaging artifacts
+examples/python/dist/
+examples/python/build/
+*.egg-info/
+.pytest_cache/
+
+# telemetry recordings (tools/robot_visualizer.py --log)
+logs/
